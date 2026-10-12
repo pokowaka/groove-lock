@@ -12,12 +12,14 @@ export type SoundEngineMode = 'click' | 'drums';
  * - `'off'`: Reference bass only plays when clicking the 1-Bar "Hear Bass Groove" preview button
  * - `'call-response-1-1'`: GrooveLock plays Bar 1 (Call), you play Bar 2 (Response)
  * - `'call-response-1-3'`: GrooveLock plays Bar 1 (Call), you play Bars 2–4 (Response)
+ * - `'demo-first'`: GrooveLock plays only the first bar after each (re)start, you play every bar after
  * - `'always'`: Reference bass plays continuously alongside the click/drums
  */
 export type BassGuideMode =
   | 'off'
   | 'call-response-1-1'
   | 'call-response-1-3'
+  | 'demo-first'
   | 'always';
 
 /**
@@ -248,6 +250,8 @@ export function isBassGuideActiveForBar(
       return barNumber % 2 === 0;
     case 'call-response-1-3':
       return barNumber % 4 === 0;
+    case 'demo-first':
+      return barNumber === 0;
   }
 }
 

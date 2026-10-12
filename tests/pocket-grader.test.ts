@@ -114,6 +114,12 @@ describe('v0.3 Groove Patterns, Reference Bass Guide & Click Placement Modes', (
     expect(isBassGuideActiveForBar(2, 'call-response-1-3')).toBe(false);
     expect(isBassGuideActiveForBar(3, 'call-response-1-3')).toBe(false);
     expect(isBassGuideActiveForBar(4, 'call-response-1-3')).toBe(true);
+
+    // Demo first: the reference bass plays only the first bar after (re)start, then you play the rest
+    expect(isBassGuideActiveForBar(0, 'demo-first')).toBe(true);
+    expect(isBassGuideActiveForBar(1, 'demo-first')).toBe(false);
+    expect(isBassGuideActiveForBar(4, 'demo-first')).toBe(false);
+    expect(isBassGuideActiveForBar(7, 'demo-first')).toBe(false);
   });
 
   it('generates 62% swung step durations in shuffle-swing mode summing to 4.0 beats per bar', () => {

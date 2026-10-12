@@ -31,7 +31,7 @@ export interface GrooveLockProfile {
   groovePattern: GroovePatternId;
   /** Audible reference sound engine (`'click'` or `'drums'`). */
   soundMode: SoundEngineMode;
-  /** Reference bass playback mode (`'off'`, `'call-response-1-1'`, `'call-response-1-3'`, `'always'`). */
+  /** Reference bass playback mode (`'off'`, `'call-response-1-1'`, `'call-response-1-3'`, `'demo-first'`, `'always'`). */
   bassGuideMode: BassGuideMode;
   /** Beat placement mode for clicks/drums (`'all'`, `'backbeat-2-4'`, `'one-drop-1'`, `'offbeat-and'`). */
   clickPlacement: ClickPlacementMode;
@@ -47,7 +47,24 @@ export interface GrooveLockProfile {
   drillMode: DrillMode;
   /** Instrument pitch filter (`'bass'`, `'guitar'`, or `'full'`). */
   instrumentRange: InstrumentRange;
+  /** Graded bars per practice round (`4`, `8`, `16`), or `0` for continuous play. */
+  roundBars: RoundLengthBars;
+  /** When `true`, the next round starts automatically after the results card countdown. */
+  autoContinue: boolean;
+  /** Visual timing help on the timeline lane (`'none'`, `'glow'`, or `'sweep'`). */
+  visualGuide: VisualGuideMode;
 }
+
+/**
+ * How much visual timing help the timeline lane gives while playing:
+ * - `'none'`: no position indicator (ears only).
+ * - `'glow'`: the current beat column lights up as it sounds (orientation, can't be anticipated).
+ * - `'sweep'`: a continuously moving playhead (predictive; pulls attention to the eyes).
+ */
+export type VisualGuideMode = 'none' | 'glow' | 'sweep';
+
+/** Bars per practice round; `0` means continuous (no rounds). */
+export type RoundLengthBars = 0 | 4 | 8 | 16;
 
 const STORAGE_KEY = 'groovelock.profile.v1';
 
@@ -72,6 +89,9 @@ export const DEFAULT_PROFILE: GrooveLockProfile = {
   speedTrainerStep: 0,
   drillMode: 'free',
   instrumentRange: 'bass',
+  roundBars: 8,
+  autoContinue: true,
+  visualGuide: 'glow',
 };
 
 /**
@@ -140,6 +160,7 @@ export function loadProfile(): GrooveLockProfile {
         parsed.bassGuideMode === 'off' ||
         parsed.bassGuideMode === 'call-response-1-1' ||
         parsed.bassGuideMode === 'call-response-1-3' ||
+        parsed.bassGuideMode === 'demo-first' ||
         parsed.bassGuideMode === 'always'
           ? parsed.bassGuideMode
           : DEFAULT_PROFILE.bassGuideMode,
@@ -186,6 +207,23 @@ export function loadProfile(): GrooveLockProfile {
         parsed.instrumentRange === 'full'
           ? parsed.instrumentRange
           : DEFAULT_PROFILE.instrumentRange,
+      roundBars:
+        parsed.roundBars === 0 ||
+        parsed.roundBars === 4 ||
+        parsed.roundBars === 8 ||
+        parsed.roundBars === 16
+          ? parsed.roundBars
+          : DEFAULT_PROFILE.roundBars,
+      autoContinue:
+        typeof parsed.autoContinue === 'boolean'
+          ? parsed.autoContinue
+          : DEFAULT_PROFILE.autoContinue,
+      visualGuide:
+        parsed.visualGuide === 'none' ||
+        parsed.visualGuide === 'glow' ||
+        parsed.visualGuide === 'sweep'
+          ? parsed.visualGuide
+          : DEFAULT_PROFILE.visualGuide,
     };
   } catch {
     return { ...DEFAULT_PROFILE };
