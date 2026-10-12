@@ -8,6 +8,19 @@ import { formatBeatLabel, type Subdivision } from './timeline';
 export type SoundEngineMode = 'click' | 'drums';
 
 /**
+ * Controls when the synthesized Reference Bass voice plays the target groove pattern:
+ * - `'off'`: Reference bass only plays when clicking the 1-Bar "Hear Bass Groove" preview button
+ * - `'call-response-1-1'`: GrooveLock plays Bar 1 (Call), you play Bar 2 (Response)
+ * - `'call-response-1-3'`: GrooveLock plays Bar 1 (Call), you play Bars 2–4 (Response)
+ * - `'always'`: Reference bass plays continuously alongside the click/drums
+ */
+export type BassGuideMode =
+  | 'off'
+  | 'call-response-1-1'
+  | 'call-response-1-3'
+  | 'always';
+
+/**
  * Controls which beats of a 4/4 bar emit an audible click or drum transient:
  * - `'all'`: All 4 beats (and subdivisions when applicable)
  * - `'backbeat-2-4'`: Beats 2 & 4 only (classic Carol Kaye / Victor Wooten backbeat lock drill)
@@ -69,6 +82,15 @@ export interface PatternStepDescriptor {
    * For `'shuffle-swing'`, downbeats are `0.62` beats and swung upbeats are `0.38` beats.
    */
   readonly durationBeats: number;
+  /**
+   * Musical sustain gate length in quarter-note beats when synthesized by the Reference Bass.
+   */
+  readonly gateBeats: number;
+  /**
+   * Octave offset (`0` = root, `1` = +1 octave) used by the Reference Bass synth for musical articulation
+   * (note evaluation still accepts any octave of the target pitch class).
+   */
+  readonly octaveShift: number;
   /** Short UI label for the 16-step pattern strip (e.g. `"1"`, `"&"`, `"e"`, `"a"`). */
   readonly shortStepLabel: string;
   /** Full beat coordinate label (e.g. `"Beat 1"`, `"2.2"`). */
@@ -108,18 +130,45 @@ export function resolvePatternBarSteps(
 ): readonly PatternStepDescriptor[] {
   if (patternId === 'motown-pocket') {
     // 8th-note grid (8 steps/bar): active on Beat 1 (0), Beat 2-& (3), Beat 3 (4), Beat 4 (6)
-    const activeSet = new Set([0, 3, 4, 6]);
-    return buildStraightBarSteps(2, (step) => activeSet.has(step));
+    const gateByStep: Readonly<Record<number, number>> = {
+      0: 1.4, // Dotted-quarter sustain across 1, 1-&, 2
+      3: 0.45, // Eighth-note pickup on 2-&
+      4: 0.9, // Quarter-note on 3
+      6: 0.9, // Quarter-note on 4
+    };
+    return buildStraightBarSteps(
+      2,
+      (step) => step in gateByStep,
+      (step) => gateByStep[step] ?? 0.4,
+      (step) => (step === 3 ? 1 : 0),
+    );
   }
 
   if (patternId === 'funk-16th') {
     // 16th-note grid (16 steps/bar): active on 1 (0), 1-a (3), 2-& (6), 3 (8), 3-e (9), 4-& (14)
-    const activeSet = new Set([0, 3, 6, 8, 9, 14]);
-    return buildStraightBarSteps(4, (step) => activeSet.has(step));
+    const gateByStep: Readonly<Record<number, number>> = {
+      0: 0.55,
+      3: 0.22,
+      6: 0.38,
+      8: 0.22,
+      9: 0.65,
+      14: 0.38,
+    };
+    return buildStraightBarSteps(
+      4,
+      (step) => step in gateByStep,
+      (step) => gateByStep[step] ?? 0.2,
+      (step) => (step === 6 || step === 14 ? 1 : 0),
+    );
   }
 
   if (patternId === 'octaves-8th') {
-    return buildStraightBarSteps(2, () => true);
+    return buildStraightBarSteps(
+      2,
+      () => true,
+      () => 0.42,
+      (step) => step % 2, // Root on downbeats, +1 octave on '&' upbeats
+    );
   }
 
   if (patternId === 'shuffle-swing') {
@@ -128,12 +177,15 @@ export function resolvePatternBarSteps(
     for (let step = 0; step < 8; step++) {
       const beatInBar = Math.floor(step / 2);
       const subIndex = step % 2;
+      const durationBeats = subIndex === 0 ? 0.62 : 0.38;
       steps.push({
         stepInBar: step,
         beatInBar,
         subIndex,
         subdivision: sub,
-        durationBeats: subIndex === 0 ? 0.62 : 0.38,
+        durationBeats,
+        gateBeats: durationBeats * 0.84,
+        octaveShift: 0,
         shortStepLabel: getShortStepLabel(beatInBar, subIndex, sub),
         beatLabel: formatBeatLabel(beatInBar, subIndex),
         isTargetActive: true,
@@ -143,12 +195,20 @@ export function resolvePatternBarSteps(
   }
 
   // Default 'uniform' mode
-  return buildStraightBarSteps(uniformSubdivision, () => true);
+  const stepDur = 1 / uniformSubdivision;
+  return buildStraightBarSteps(
+    uniformSubdivision,
+    () => true,
+    () => stepDur * 0.82,
+    () => 0,
+  );
 }
 
 function buildStraightBarSteps(
   subdivision: Subdivision,
   isActiveFn: (stepInBar: number) => boolean,
+  gateBeatsFn: (stepInBar: number) => number,
+  octaveShiftFn: (stepInBar: number) => number,
 ): readonly PatternStepDescriptor[] {
   const totalSteps = 4 * subdivision;
   const steps: PatternStepDescriptor[] = [];
@@ -161,6 +221,8 @@ function buildStraightBarSteps(
       subIndex,
       subdivision,
       durationBeats: 1 / subdivision,
+      gateBeats: gateBeatsFn(step),
+      octaveShift: octaveShiftFn(step),
       shortStepLabel: getShortStepLabel(beatInBar, subIndex, subdivision),
       beatLabel: formatBeatLabel(beatInBar, subIndex),
       isTargetActive: isActiveFn(step),
@@ -170,8 +232,28 @@ function buildStraightBarSteps(
 }
 
 /**
- * Determines whether a given step in the bar should emit an audible sound under the
- * active `ClickPlacementMode` and `GapClickMode`.
+ * Determines whether the synthesized Reference Bass should play during `barNumber`
+ * under the selected `BassGuideMode`.
+ */
+export function isBassGuideActiveForBar(
+  barNumber: number,
+  guideMode: BassGuideMode,
+): boolean {
+  switch (guideMode) {
+    case 'off':
+      return false;
+    case 'always':
+      return true;
+    case 'call-response-1-1':
+      return barNumber % 2 === 0;
+    case 'call-response-1-3':
+      return barNumber % 4 === 0;
+  }
+}
+
+/**
+ * Determines whether a given step in the bar should emit an audible click/drum sound
+ * under the active `ClickPlacementMode` and `GapClickMode`.
  */
 export function isStepAudible(
   step: PatternStepDescriptor,

@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { frequencyToPitchEstimate } from '../src/dsp/pitch-utils';
 import {
+  describeBassVoiceNote,
+  frequencyToPitchEstimate,
+  noteClassToBassFrequencyHz,
+} from '../src/dsp/pitch-utils';
+import {
+  isBassGuideActiveForBar,
   isStepAudible,
   resolvePatternBarSteps,
 } from '../src/groove/patterns';
@@ -56,14 +61,17 @@ describe('Timeline & Target Note Generators', () => {
   });
 });
 
-describe('v0.3 Groove Patterns & Click Placement Modes', () => {
-  it('generates Motown (1, 2-&, 3, 4) and Funk 16th syncopated active step masks', () => {
+describe('v0.3 Groove Patterns, Reference Bass Guide & Click Placement Modes', () => {
+  it('generates Motown (1, 2-&, 3, 4) and Funk 16th syncopated active step masks with musical gate durations', () => {
     const motown = resolvePatternBarSteps('motown-pocket', 1);
     expect(motown).toHaveLength(8);
     const activeMotownIndices = motown
       .filter((s) => s.isTargetActive)
       .map((s) => s.stepInBar);
     expect(activeMotownIndices).toEqual([0, 3, 4, 6]);
+    // Motown Beat 1 holds for a dotted-quarter sustain (~1.38 beats) before the 2-& pickup
+    expect(motown[0].gateBeats).toBeGreaterThan(1.2);
+    expect(motown[3].gateBeats).toBeLessThan(0.5);
 
     const funk = resolvePatternBarSteps('funk-16th', 1);
     expect(funk).toHaveLength(16);
@@ -71,6 +79,41 @@ describe('v0.3 Groove Patterns & Click Placement Modes', () => {
       .filter((s) => s.isTargetActive)
       .map((s) => s.stepInBar);
     expect(activeFunkIndices).toEqual([0, 3, 6, 8, 9, 14]);
+    // Step 6 (2-&) and Step 14 (4-&) are octave pops (+1 octave)
+    expect(funk[6].octaveShift).toBe(1);
+    expect(funk[14].octaveShift).toBe(1);
+
+    const octaves = resolvePatternBarSteps('octaves-8th', 1);
+    expect(octaves.map((s) => s.octaveShift)).toEqual([0, 1, 0, 1, 0, 1, 0, 1]);
+  });
+
+  it('maps target note classes to 1st-position electric bass fundamentals, fretboard hints, and Call & Response bars', () => {
+    // Open E1 = 41.203 Hz, Open A1 = 55.0 Hz, Open D2 = 73.416 Hz
+    expect(noteClassToBassFrequencyHz('E', 'bass', 0)).toBeCloseTo(41.203, 2);
+    expect(noteClassToBassFrequencyHz('ANY', 'bass', 0)).toBeCloseTo(41.203, 2);
+    expect(noteClassToBassFrequencyHz('A', 'bass', 0)).toBeCloseTo(55.0, 2);
+    expect(noteClassToBassFrequencyHz('A', 'bass', 1)).toBeCloseTo(110.0, 2);
+    expect(noteClassToBassFrequencyHz('E', 'guitar', 0)).toBeCloseTo(82.407, 2);
+
+    const e1Voice = describeBassVoiceNote('ANY', 'bass', 0);
+    expect(e1Voice.fullName).toBe('E1');
+    expect(e1Voice.fretboardHint).toContain('E-String Open');
+
+    const e2OctaveVoice = describeBassVoiceNote('E', 'bass', 1);
+    expect(e2OctaveVoice.fullName).toBe('E2');
+    expect(e2OctaveVoice.fretboardHint).toContain('D-String Fret 2');
+
+    // Call & Response (1 Demo / 1 You)
+    expect(isBassGuideActiveForBar(0, 'call-response-1-1')).toBe(true);
+    expect(isBassGuideActiveForBar(1, 'call-response-1-1')).toBe(false);
+    expect(isBassGuideActiveForBar(2, 'call-response-1-1')).toBe(true);
+
+    // Call & Response (1 Demo / 3 You)
+    expect(isBassGuideActiveForBar(0, 'call-response-1-3')).toBe(true);
+    expect(isBassGuideActiveForBar(1, 'call-response-1-3')).toBe(false);
+    expect(isBassGuideActiveForBar(2, 'call-response-1-3')).toBe(false);
+    expect(isBassGuideActiveForBar(3, 'call-response-1-3')).toBe(false);
+    expect(isBassGuideActiveForBar(4, 'call-response-1-3')).toBe(true);
   });
 
   it('generates 62% swung step durations in shuffle-swing mode summing to 4.0 beats per bar', () => {

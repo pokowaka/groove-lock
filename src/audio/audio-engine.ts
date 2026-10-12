@@ -1,3 +1,4 @@
+import { noteClassToBassFrequencyHz } from '../dsp/pitch-utils';
 import type {
   DetectedPluckEvent,
   InputChannelMode,
@@ -8,10 +9,13 @@ import type {
   WorkletToMainMessage,
 } from '../dsp/types';
 import {
+  type BassGuideMode,
   type ClickPlacementMode,
   type GroovePatternId,
+  isBassGuideActiveForBar,
   isStepAudible,
   type PatternStepDescriptor,
+  type PocketFeelOffsetMs,
   resolvePatternBarSteps,
   type SoundEngineMode,
 } from '../groove/patterns';
@@ -59,11 +63,10 @@ export interface AudioEngineCallbacks {
     barNumber: number,
     isSilentGapBar: boolean,
   ) => void;
-  /** Called on every pattern step boundary to animate the Bar Pattern Step Indicator. */
+  /** Called on every pattern step boundary to animate the Bar Pattern Step Indicator and active note display. */
   readonly onStepLamp?: (
-    stepInBar: number,
-    barNumber: number,
-    isSilentGapBar: boolean,
+    step: PatternStepDescriptor,
+    target: TargetNoteEvent,
   ) => void;
   /** Called when an automated 6-ping hardware loopback calibration completes. */
   readonly onLoopbackComplete: (summary: LoopbackSummary) => void;
@@ -71,21 +74,7 @@ export interface AudioEngineCallbacks {
 
 /**
  * Manages the dual-`AudioContext` hardware architecture, Web Audio lookahead metronome
- * & synthesized drum scheduler, and sample-accurate loopback calibration.
- *
- * ### Why Two Separate `AudioContext` Instances?
- * In Chromium on macOS/Windows, calling `ctx.createMediaStreamSource(usbInputStream)`
- * binds that `AudioContext`'s hardware clock to the USB input device (e.g. Focusrite Scarlett Solo)
- * and prevents `ctx.setSinkId()` from switching audio output to a different USB DAC
- * (such as a Fosi Audio ZD3).
- *
- * By isolating:
- * - **`inputCtx`** (`setSinkId({ type: 'none' })` + zero-output `AudioWorkletNode`) for
- *   Scarlett Solo capture & DSP analysis, and
- * - **`outputCtx`** (`setSinkId(sinkDeviceId)`) exclusively for click/drum track and sonar ping playback,
- *
- * GrooveLock guarantees zero browser instrument playback echo and instant, hot-swappable
- * output routing across any combination of USB audio interfaces and DACs.
+ * & synthesized drum/bass scheduler, and sample-accurate loopback calibration.
  */
 export class AudioEngine {
   private outputCtx: SinkableAudioContext | null = null;
@@ -108,7 +97,9 @@ export class AudioEngine {
   private subdivision: Subdivision = 1;
   private groovePattern: GroovePatternId = 'uniform';
   private soundMode: SoundEngineMode = 'click';
+  private bassGuideMode: BassGuideMode = 'off';
   private clickPlacement: ClickPlacementMode = 'all';
+  private pocketCenterMs: PocketFeelOffsetMs = 0;
   private gapBars: GapClickMode = 0;
   private drillMode: DrillMode = 'free';
   private activeBarTargetNote: TargetNoteEvent['expectedNote'] = 'ANY';
@@ -135,6 +126,13 @@ export class AudioEngine {
   }
 
   /**
+   * Returns `true` if the USB audio input stream and capture worklet are actively connected.
+   */
+  public isInputConnected(): boolean {
+    return this.inputCtx !== null && this.workletNode !== null;
+  }
+
+  /**
    * Returns `true` if the lookahead metronome scheduler is currently running.
    */
   public isMetronomeRunning(): boolean {
@@ -157,15 +155,17 @@ export class AudioEngine {
   }
 
   /**
-   * Updates metronome tempo, subdivision grid, groove pattern, sound engine, click placement,
-   * gap-click mode, or note exercise mode.
+   * Updates metronome tempo, subdivision grid, groove pattern, sound engine, reference bass guide,
+   * click placement, pocket feel center, gap-click mode, or note exercise mode.
    */
   public setTransportConfig(config: {
     bpm?: number;
     subdivision?: Subdivision;
     groovePattern?: GroovePatternId;
     soundMode?: SoundEngineMode;
+    bassGuideMode?: BassGuideMode;
     clickPlacement?: ClickPlacementMode;
+    pocketCenterMs?: PocketFeelOffsetMs;
     gapBars?: GapClickMode;
     drillMode?: DrillMode;
   }): void {
@@ -182,8 +182,14 @@ export class AudioEngine {
     if (config.soundMode !== undefined) {
       this.soundMode = config.soundMode;
     }
+    if (config.bassGuideMode !== undefined) {
+      this.bassGuideMode = config.bassGuideMode;
+    }
     if (config.clickPlacement !== undefined) {
       this.clickPlacement = config.clickPlacement;
+    }
+    if (config.pocketCenterMs !== undefined) {
+      this.pocketCenterMs = config.pocketCenterMs;
     }
     if (config.gapBars !== undefined) {
       this.gapBars = config.gapBars;
@@ -296,7 +302,7 @@ export class AudioEngine {
 
   /**
    * Routes `outputCtx` (click track & calibration pings) to the specified output `sinkDeviceId`
-   * via `AudioContext.setSinkId()`. Optionally plays a short 1046.5 Hz confirmation tick.
+   * via `AudioContext.setSinkId()`. Optionally plays a short confirmation tick.
    */
   public async applyOutputDevice(
     sinkDeviceId: string,
@@ -466,10 +472,16 @@ export class AudioEngine {
 
   /**
    * Starts the Web Audio lookahead metronome scheduler (`25 ms` timer interval, `100 ms` lookahead).
+   * Lazily initializes `outputCtx` if the user has not yet connected an audio input interface.
    */
   public startMetronome(): void {
-    if (!this.outputCtx || this.isRunning) {
+    if (this.isRunning) {
       return;
+    }
+    if (!this.outputCtx) {
+      this.outputCtx = new AudioContext({
+        latencyHint: 'interactive',
+      }) as SinkableAudioContext;
     }
     if (this.outputCtx.state === 'suspended') {
       void this.outputCtx.resume();
@@ -542,7 +554,17 @@ export class AudioEngine {
         isSilentGapBar,
       };
 
-      this.scheduleStepAudioAndLamps(step, targetEvent);
+      const guideBassPlayingThisBar = isBassGuideActiveForBar(
+        this.currentBarNumber,
+        this.bassGuideMode,
+      );
+
+      this.scheduleStepAudioAndLamps(
+        step,
+        targetEvent,
+        guideBassPlayingThisBar,
+      );
+
       if (step.isTargetActive) {
         this.callbacks.onTargetScheduled(targetEvent);
       }
@@ -553,54 +575,76 @@ export class AudioEngine {
     }
   }
 
+  private scheduleClickOrDrumForStep(
+    step: PatternStepDescriptor,
+    timeSec: number,
+    isSilentGapBar: boolean,
+  ): void {
+    if (!this.outputCtx) {
+      return;
+    }
+    const audible = isStepAudible(
+      step,
+      this.clickPlacement,
+      isSilentGapBar,
+    );
+    if (!audible) {
+      return;
+    }
+
+    if (this.soundMode === 'drums') {
+      if (step.subIndex === 0) {
+        if (step.beatInBar === 0 || step.beatInBar === 2) {
+          this.drumSynth.scheduleKick(this.outputCtx, timeSec, 0.58);
+          this.drumSynth.scheduleHiHat(this.outputCtx, timeSec, 0.14);
+        } else {
+          this.drumSynth.scheduleSnare(this.outputCtx, timeSec, 0.42);
+          this.drumSynth.scheduleHiHat(this.outputCtx, timeSec, 0.16);
+        }
+      } else {
+        this.drumSynth.scheduleHiHat(this.outputCtx, timeSec, 0.12);
+      }
+    } else {
+      if (step.subIndex === 0 && step.beatInBar === 0) {
+        this.drumSynth.scheduleClick(this.outputCtx, timeSec, 'downbeat');
+      } else if (step.subIndex === 0) {
+        this.drumSynth.scheduleClick(this.outputCtx, timeSec, 'quarter');
+      } else {
+        this.drumSynth.scheduleClick(this.outputCtx, timeSec, 'subdivision');
+      }
+    }
+  }
+
   private scheduleStepAudioAndLamps(
     step: PatternStepDescriptor,
     target: TargetNoteEvent,
+    playGuideBass: boolean,
   ): void {
     if (!this.outputCtx) {
       return;
     }
 
-    const audible = isStepAudible(
+    this.scheduleClickOrDrumForStep(
       step,
-      this.clickPlacement,
+      target.timeSec,
       target.isSilentGapBar,
     );
 
-    if (audible) {
-      if (this.soundMode === 'drums') {
-        if (step.subIndex === 0) {
-          if (step.beatInBar === 0 || step.beatInBar === 2) {
-            this.drumSynth.scheduleKick(this.outputCtx, target.timeSec, 0.58);
-            this.drumSynth.scheduleHiHat(this.outputCtx, target.timeSec, 0.14);
-          } else {
-            this.drumSynth.scheduleSnare(this.outputCtx, target.timeSec, 0.42);
-            this.drumSynth.scheduleHiHat(this.outputCtx, target.timeSec, 0.16);
-          }
-        } else {
-          this.drumSynth.scheduleHiHat(this.outputCtx, target.timeSec, 0.12);
-        }
-      } else {
-        if (step.subIndex === 0 && step.beatInBar === 0) {
-          this.drumSynth.scheduleClick(
-            this.outputCtx,
-            target.timeSec,
-            'downbeat',
-          );
-        } else if (step.subIndex === 0) {
-          this.drumSynth.scheduleClick(
-            this.outputCtx,
-            target.timeSec,
-            'quarter',
-          );
-        } else {
-          this.drumSynth.scheduleClick(
-            this.outputCtx,
-            target.timeSec,
-            'subdivision',
-          );
-        }
-      }
+    if (playGuideBass && step.isTargetActive && !target.isSilentGapBar) {
+      const secondsPerBeat = 60.0 / this.bpm;
+      const bassTimeSec = target.timeSec + this.pocketCenterMs / 1000;
+      const freqHz = noteClassToBassFrequencyHz(
+        target.expectedNote,
+        this.instrumentRange,
+        step.octaveShift,
+      );
+      this.drumSynth.scheduleBassNote(
+        this.outputCtx,
+        bassTimeSec,
+        freqHz,
+        step.gateBeats * secondsPerBeat,
+        0.38,
+      );
     }
 
     const delayMs = Math.max(
@@ -618,11 +662,7 @@ export class AudioEngine {
           target.isSilentGapBar,
         );
       }
-      this.callbacks.onStepLamp?.(
-        step.stepInBar,
-        target.barNumber,
-        target.isSilentGapBar,
-      );
+      this.callbacks.onStepLamp?.(step, target);
     }, delayMs);
   }
 

@@ -1,8 +1,8 @@
 /**
- * Pure Web Audio studio click and drum kit synthesizer (`src/audio/drum-synth.ts`).
+ * Pure Web Audio studio click, drum kit, and reference electric bass synthesizer (`src/audio/drum-synth.ts`).
  *
- * Synthesizes punchy, zero-latency studio Kick, Snare, Hi-Hat, and Metronome Click
- * transients procedurally on `outputCtx` without requiring external audio sample files.
+ * Synthesizes punchy, zero-latency studio Kick, Snare, Hi-Hat, Metronome Click, and
+ * fingerstyle P-Bass reference notes procedurally on `outputCtx` without external audio sample files.
  */
 export class StudioDrumSynth {
   private noiseBuffer: AudioBuffer | null = null;
@@ -157,5 +157,82 @@ export class StudioDrumSynth {
     gain.connect(ctx.destination);
     noiseSrc.start(timeSec);
     noiseSrc.stop(timeSec + 0.036);
+  }
+
+  /**
+   * Schedules a warm, articulate fingerstyle Electric Bass (P-Bass / Jazz Bass model) note:
+   * - Combines a fundamental `triangle` sub-oscillator with a harmonic `sawtooth` string voice
+   *   so even low notes (`E1 = 41.2 Hz`) translate clearly on headphones and desktop monitors.
+   * - Passes through a resonant 12 dB/oct `lowpass` filter (`Q = 2.4`) whose cutoff sweeps from
+   *   `freqHz * 14` on the finger pluck attack down to `freqHz * 4.2` over 85 ms.
+   * - Sustains for `gateDurationSec` before a smooth 22 ms left-hand finger mute release.
+   *
+   * @param ctx Output `AudioContext`.
+   * @param timeSec Exact start timestamp in `ctx.currentTime` seconds.
+   * @param freqHz Fundamental bass frequency in Hz (e.g. `41.20` for E1).
+   * @param gateDurationSec Musical note length in seconds before finger mute.
+   * @param level Peak amplitude gain (default `0.38`).
+   */
+  public scheduleBassNote(
+    ctx: AudioContext,
+    timeSec: number,
+    freqHz: number,
+    gateDurationSec: number,
+    level = 0.38,
+  ): void {
+    const clampedGate = Math.max(0.045, Math.min(2.5, gateDurationSec));
+    const stopTime = timeSec + clampedGate + 0.028;
+
+    // Sub fundamental voice (triangle) + harmonic overtone voice (sawtooth)
+    const subOsc = ctx.createOscillator();
+    const harmOsc = ctx.createOscillator();
+    subOsc.type = 'triangle';
+    harmOsc.type = 'sawtooth';
+
+    // Subtle pitch-drop transient (+18 cents settling to 0 cents in 14 ms) like a real plucked thick string
+    subOsc.frequency.setValueAtTime(freqHz * 1.01, timeSec);
+    subOsc.frequency.exponentialRampToValueAtTime(freqHz, timeSec + 0.014);
+    harmOsc.frequency.setValueAtTime(freqHz * 1.01, timeSec);
+    harmOsc.frequency.exponentialRampToValueAtTime(freqHz, timeSec + 0.014);
+
+    const subMix = ctx.createGain();
+    const harmMix = ctx.createGain();
+    subMix.gain.setValueAtTime(0.65, timeSec);
+    harmMix.gain.setValueAtTime(0.45, timeSec);
+
+    // Pluck low-pass filter envelope
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.Q.setValueAtTime(2.4, timeSec);
+    const attackCutoff = Math.min(2600, Math.max(480, freqHz * 14));
+    const sustainCutoff = Math.min(900, Math.max(175, freqHz * 4.2));
+    filter.frequency.setValueAtTime(attackCutoff, timeSec);
+    filter.frequency.exponentialRampToValueAtTime(
+      sustainCutoff,
+      timeSec + 0.085,
+    );
+
+    // Amplitude envelope with clean finger-mute release at timeSec + clampedGate
+    const ampGain = ctx.createGain();
+    ampGain.gain.setValueAtTime(0.001, timeSec);
+    ampGain.gain.linearRampToValueAtTime(level, timeSec + 0.005);
+    ampGain.gain.exponentialRampToValueAtTime(
+      level * 0.68,
+      timeSec + Math.min(0.09, clampedGate * 0.5),
+    );
+    ampGain.gain.setValueAtTime(level * 0.62, timeSec + clampedGate);
+    ampGain.gain.exponentialRampToValueAtTime(0.0008, stopTime);
+
+    subOsc.connect(subMix);
+    harmOsc.connect(harmMix);
+    subMix.connect(filter);
+    harmMix.connect(filter);
+    filter.connect(ampGain);
+    ampGain.connect(ctx.destination);
+
+    subOsc.start(timeSec);
+    harmOsc.start(timeSec);
+    subOsc.stop(stopTime + 0.005);
+    harmOsc.stop(stopTime + 0.005);
   }
 }

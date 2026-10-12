@@ -1,5 +1,6 @@
 import type { InputChannelMode, InstrumentRange } from '../dsp/types';
 import type {
+  BassGuideMode,
   ClickPlacementMode,
   GroovePatternId,
   PocketFeelOffsetMs,
@@ -30,6 +31,8 @@ export interface GrooveLockProfile {
   groovePattern: GroovePatternId;
   /** Audible reference sound engine (`'click'` or `'drums'`). */
   soundMode: SoundEngineMode;
+  /** Reference bass playback mode (`'off'`, `'call-response-1-1'`, `'call-response-1-3'`, `'always'`). */
+  bassGuideMode: BassGuideMode;
   /** Beat placement mode for clicks/drums (`'all'`, `'backbeat-2-4'`, `'one-drop-1'`, `'offbeat-and'`). */
   clickPlacement: ClickPlacementMode;
   /** In-the-pocket tolerance half-window in milliseconds (`10`, `16`, or `25`). */
@@ -61,6 +64,7 @@ export const DEFAULT_PROFILE: GrooveLockProfile = {
   subdivision: 1,
   groovePattern: 'uniform',
   soundMode: 'click',
+  bassGuideMode: 'off',
   clickPlacement: 'all',
   pocketWindowMs: 16,
   pocketCenterMs: 0,
@@ -132,6 +136,13 @@ export function loadProfile(): GrooveLockProfile {
         parsed.soundMode === 'click' || parsed.soundMode === 'drums'
           ? parsed.soundMode
           : DEFAULT_PROFILE.soundMode,
+      bassGuideMode:
+        parsed.bassGuideMode === 'off' ||
+        parsed.bassGuideMode === 'call-response-1-1' ||
+        parsed.bassGuideMode === 'call-response-1-3' ||
+        parsed.bassGuideMode === 'always'
+          ? parsed.bassGuideMode
+          : DEFAULT_PROFILE.bassGuideMode,
       clickPlacement:
         parsed.clickPlacement === 'all' ||
         parsed.clickPlacement === 'backbeat-2-4' ||

@@ -370,7 +370,28 @@ input[type="range"] {
 .pattern-strip-wrap {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
+}
+
+.pattern-strip-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.pattern-strip-header .field-label {
+  flex: 1;
+  min-width: 220px;
+}
+
+.btn-sm {
+  padding: 5px 11px;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
 .pattern-steps-grid {
@@ -380,6 +401,11 @@ input[type="range"] {
 }
 
 .pattern-step-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
   background-color: var(--bg-inset);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
@@ -390,6 +416,19 @@ input[type="range"] {
   font-weight: 600;
   color: var(--text-secondary);
   transition: background-color 50ms ease, border-color 50ms ease, color 50ms ease;
+}
+
+.step-beat-label {
+  font-size: 10px;
+  color: var(--text-muted);
+  line-height: 1.1;
+}
+
+.step-note-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent-amber);
+  line-height: 1.1;
 }
 
 .pattern-step-cell.target-active {
@@ -404,11 +443,21 @@ input[type="range"] {
   color: var(--text-muted);
 }
 
+.pattern-step-cell.target-rest .step-note-label {
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
 .pattern-step-cell.playhead-current {
   background-color: var(--accent-pocket-dim);
   border-color: var(--accent-pocket);
   color: var(--accent-pocket);
   opacity: 1;
+}
+
+.pattern-step-cell.playhead-current .step-beat-label,
+.pattern-step-cell.playhead-current .step-note-label {
+  color: var(--accent-pocket);
 }
 
 /* Pocket Micro-Timing Analyzer Display */

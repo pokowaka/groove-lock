@@ -179,7 +179,11 @@ export class PocketGrader {
     }
 
     const stepDurationMs = 60000 / params.bpm / params.subdivision;
-    if (Math.abs(match.offsetMs) > stepDurationMs * 0.56) {
+    const maxCaptureWindowMs = Math.max(
+      stepDurationMs * 0.65,
+      (60000 / params.bpm) * 0.45,
+    );
+    if (Math.abs(match.offsetMs) > maxCaptureWindowMs) {
       return null;
     }
 

@@ -26,7 +26,7 @@
         <button type="button" class="btn btn-primary" id="connect-audio-btn">
           Enable Scarlett Input
         </button>
-        <button type="button" class="btn" id="toggle-metronome-btn" disabled>
+        <button type="button" class="btn" id="toggle-metronome-btn">
           Start Click (Space)
         </button>
         <button type="button" class="btn" id="loopback-ping-btn" disabled>
@@ -249,6 +249,18 @@
               <option value="4">+4 BPM / 4 Clean Bars</option>
             </select>
           </div>
+
+          <div class="control-field">
+            <label class="field-label" for="bass-guide-select">
+              <span>Reference Bass Guide</span>
+            </label>
+            <select id="bass-guide-select">
+              <option value="off" selected>Off (Click Only)</option>
+              <option value="call-response-1-1">Call &amp; Response (1 Demo / 1 You)</option>
+              <option value="call-response-1-3">Call &amp; Response (1 Demo / 3 You)</option>
+              <option value="always">Guide Bass Always On</option>
+            </select>
+          </div>
         </div>
 
         <!-- 4-Beat Visual Lamps -->
@@ -261,9 +273,14 @@
 
         <!-- Bar Pattern Step Sequencer Indicator -->
         <div class="pattern-strip-wrap">
-          <div class="field-label">
-            <span>Bar Target Pattern (Lit = Pluck · Dashed = Rest)</span>
-            <span class="field-value" id="pattern-step-count-label">4 Steps / Bar</span>
+          <div class="pattern-strip-header">
+            <div class="field-label">
+              <span>Bar Target Pattern (Lit = Pluck · Dashed = Rest)</span>
+              <span class="field-value" id="pattern-step-count-label">4 Steps / Bar</span>
+            </div>
+            <button type="button" class="btn btn-sm" id="preview-pattern-btn">
+              Bass Line: OFF
+            </button>
           </div>
           <div class="pattern-steps-grid" id="pattern-steps-strip"></div>
         </div>

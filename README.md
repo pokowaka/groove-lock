@@ -48,12 +48,16 @@ groove-lock/
     $24.3\text{ ms}$ wave period spans multiple 128-sample blocks) from ever false-triggering on
     waveform zero-crossings.
 - **The Pocket Laboratory (`src/groove/patterns.ts` & `src/audio/drum-synth.ts`):**
-  - **Synthesized Studio Drum Kit:** Zero-asset procedural Kick, Snare, and Hi-Hat synthesis so
-    bassists can lock into a kick/snare groove instead of a sterile beep.
+  - **Synthesized Studio Drum Kit & Electric Bass:** Zero-asset procedural Kick, Snare, Hi-Hat, and
+    fingerstyle P-Bass synthesis so bassists can lock into a real groove instead of a sterile beep.
+  - **Live Bass Line Toggle & Call-and-Response Guide:** Toggle **Bass Line: ON / OFF** at any time
+    to hear what the selected pattern, BPM, target pitch, and pocket feel sound like on bass without
+    stopping playback, or practice with **Call & Response (`1 Demo / 1 You` or `1 Demo / 3 You`)**.
   - **Click Placement Modes:** Practice with All 4 Beats, **Backbeat Only (Beats 2 & 4)**,
     **One-Drop (Beat 1 Only)**, or **Off-Beat `&` Only**.
   - **Syncopated Groove Patterns & 16-Step Indicator:** Built-in Motown (`1, 2-&, 3, 4`), Funk 16th
-    syncopation, $62\%$ Swung Shuffle, and 8th-note pulse templates with a live visual step strip.
+    syncopation, $62\%$ Swung Shuffle, and 8th-note Octave pulse templates with a live visual step
+    strip.
   - **Intentional Pocket Feel Offset & Speed Trainer:** Shift the target pocket zone to **Laid-Back
     ($+12\text{ ms}$)** or **Pushed ($-8\text{ ms}$)**, and automatically step up $+2/+4\text{ BPM}$
     every 4 clean bars ($\ge 85\%$ in-pocket).

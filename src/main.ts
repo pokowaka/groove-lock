@@ -1,5 +1,6 @@
 import './style.css';
 import { AudioEngine } from './audio/audio-engine';
+import { describeBassVoiceNote } from './dsp/pitch-utils';
 import type {
   DetectedPluckEvent,
   InputChannelMode,
@@ -8,9 +9,12 @@ import type {
   MeterSnapshot,
 } from './dsp/types';
 import {
+  type BassGuideMode,
   type ClickPlacementMode,
   formatPatternSummary,
   type GroovePatternId,
+  isBassGuideActiveForBar,
+  type PatternStepDescriptor,
   type PocketFeelOffsetMs,
   resolvePatternBarSteps,
   type SoundEngineMode,
@@ -71,6 +75,7 @@ function bootstrapGrooveLock(): void {
     groovePatternSelect: requireEl<HTMLSelectElement>('groove-pattern-select'),
     subdivisionSelect: requireEl<HTMLSelectElement>('subdivision-select'),
     soundModeSelect: requireEl<HTMLSelectElement>('sound-mode-select'),
+    bassGuideSelect: requireEl<HTMLSelectElement>('bass-guide-select'),
     clickPlacementSelect: requireEl<HTMLSelectElement>('click-placement-select'),
     pocketFeelSelect: requireEl<HTMLSelectElement>('pocket-feel-select'),
     pocketWindowSelect: requireEl<HTMLSelectElement>('pocket-window-select'),
@@ -84,6 +89,7 @@ function bootstrapGrooveLock(): void {
       requireEl<HTMLDivElement>('beat-lamp-3'),
     ],
     patternStepCountLabel: requireEl<HTMLSpanElement>('pattern-step-count-label'),
+    previewPatternBtn: requireEl<HTMLButtonElement>('preview-pattern-btn'),
     patternStepsStrip: requireEl<HTMLDivElement>('pattern-steps-strip'),
     lastOffsetMs: requireEl<HTMLDivElement>('last-offset-ms'),
     timingVerdictBadge: requireEl<HTMLSpanElement>('timing-verdict-badge'),
@@ -113,6 +119,9 @@ function bootstrapGrooveLock(): void {
   let calibrationOffsetsMs: number[] = [];
   let isLoopbackPinging = false;
   let patternCellElements: HTMLDivElement[] = [];
+  let patternNoteElements: HTMLSpanElement[] = [];
+  let currentBarExpectedNote: TargetNoteEvent['expectedNote'] =
+    computeBarTarget(profile.drillMode, 0).targetNote;
 
   const engine = new AudioEngine({
     onMeter: handleMeterSnapshot,
@@ -154,6 +163,31 @@ function bootstrapGrooveLock(): void {
     );
   }
 
+  function updatePatternStepNoteLabels(
+    barExpectedNote: TargetNoteEvent['expectedNote'],
+  ): void {
+    const steps = resolvePatternBarSteps(
+      profile.groovePattern,
+      profile.subdivision,
+    );
+    steps.forEach((step, idx) => {
+      const noteEl = patternNoteElements[idx];
+      if (!noteEl) {
+        return;
+      }
+      if (step.isTargetActive) {
+        const voice = describeBassVoiceNote(
+          barExpectedNote,
+          profile.instrumentRange,
+          step.octaveShift,
+        );
+        noteEl.textContent = voice.fullName;
+      } else {
+        noteEl.textContent = '—';
+      }
+    });
+  }
+
   function renderPatternStepsStrip(): void {
     const steps = resolvePatternBarSteps(
       profile.groovePattern,
@@ -166,13 +200,34 @@ function bootstrapGrooveLock(): void {
     dom.subdivisionSelect.disabled = profile.groovePattern !== 'uniform';
 
     dom.patternStepsStrip.replaceChildren();
+    patternNoteElements = [];
     patternCellElements = steps.map((step) => {
       const cell = document.createElement('div');
       cell.className = step.isTargetActive
         ? 'pattern-step-cell target-active'
         : 'pattern-step-cell target-rest';
-      cell.textContent = step.shortStepLabel;
+
+      const beatSpan = document.createElement('span');
+      beatSpan.className = 'step-beat-label';
+      beatSpan.textContent = step.shortStepLabel;
+
+      const noteSpan = document.createElement('span');
+      noteSpan.className = 'step-note-label';
+      if (step.isTargetActive) {
+        const voice = describeBassVoiceNote(
+          currentBarExpectedNote,
+          profile.instrumentRange,
+          step.octaveShift,
+        );
+        noteSpan.textContent = voice.fullName;
+      } else {
+        noteSpan.textContent = '—';
+      }
+
+      cell.appendChild(beatSpan);
+      cell.appendChild(noteSpan);
       dom.patternStepsStrip.appendChild(cell);
+      patternNoteElements.push(noteSpan);
       return cell;
     });
   }
@@ -180,11 +235,43 @@ function bootstrapGrooveLock(): void {
   function updateTargetNoteDisplay(
     barNumber: number,
     overrideNote?: TargetNoteEvent['expectedNote'],
+    octaveShift = 0,
   ): void {
     const computed = computeBarTarget(profile.drillMode, barNumber);
     const noteToDisplay = overrideNote ?? computed.targetNote;
-    dom.targetNoteName.textContent = noteToDisplay;
-    dom.targetNoteStatus.textContent = computed.statusCaption;
+    currentBarExpectedNote = noteToDisplay;
+
+    const voice = describeBassVoiceNote(
+      noteToDisplay,
+      profile.instrumentRange,
+      octaveShift,
+    );
+    const guidePlayingThisBar = isBassGuideActiveForBar(
+      barNumber,
+      profile.bassGuideMode,
+    );
+    const isDemoBar =
+      (profile.bassGuideMode === 'call-response-1-1' ||
+        profile.bassGuideMode === 'call-response-1-3') &&
+      guidePlayingThisBar;
+
+    // Show the concrete bass note (e.g. E1, E2, A1) whenever a specific pitch is required
+    // OR whenever the Reference Bass Line is enabled so the user can see what note it is playing.
+    if (noteToDisplay === 'ANY' && profile.bassGuideMode === 'off') {
+      dom.targetNoteName.textContent = `ANY (${voice.fullName})`;
+      dom.targetNoteStatus.textContent = `Free Pitch · Guide Root: ${voice.fullName} (${voice.freqHz.toFixed(1)} Hz · ${voice.fretboardHint})`;
+      return;
+    }
+
+    dom.targetNoteName.textContent = voice.fullName;
+
+    if (isDemoBar) {
+      dom.targetNoteStatus.textContent = `DEMO BAR — Playing ${voice.fullName} (${voice.freqHz.toFixed(1)} Hz · ${voice.fretboardHint})`;
+    } else if (noteToDisplay === 'ANY') {
+      dom.targetNoteStatus.textContent = `Bass Playing ${voice.fullName} (${voice.freqHz.toFixed(1)} Hz · ${voice.fretboardHint}) — Free Pitch`;
+    } else {
+      dom.targetNoteStatus.textContent = `${voice.fullName} (${voice.freqHz.toFixed(1)} Hz · ${voice.fretboardHint}) · ${computed.statusCaption}`;
+    }
   }
 
   function applyProfileToUiAndEngine(): void {
@@ -197,6 +284,7 @@ function bootstrapGrooveLock(): void {
     dom.groovePatternSelect.value = profile.groovePattern;
     dom.subdivisionSelect.value = String(profile.subdivision);
     dom.soundModeSelect.value = profile.soundMode;
+    dom.bassGuideSelect.value = profile.bassGuideMode;
     dom.clickPlacementSelect.value = profile.clickPlacement;
     dom.pocketFeelSelect.value = String(profile.pocketCenterMs);
     dom.pocketWindowSelect.value = String(profile.pocketWindowMs);
@@ -215,7 +303,9 @@ function bootstrapGrooveLock(): void {
       subdivision: profile.subdivision,
       groovePattern: profile.groovePattern,
       soundMode: profile.soundMode,
+      bassGuideMode: profile.bassGuideMode,
       clickPlacement: profile.clickPlacement,
+      pocketCenterMs: profile.pocketCenterMs,
       gapBars: profile.gapBars,
       drillMode: profile.drillMode,
     });
@@ -224,6 +314,7 @@ function bootstrapGrooveLock(): void {
     updatePocketZoneVisual();
     updateGridSummaryText();
     renderPatternStepsStrip();
+    syncBassLineButtonUI();
     updateTargetNoteDisplay(0);
   }
 
@@ -376,9 +467,23 @@ function bootstrapGrooveLock(): void {
     });
   }
 
-  function handleStepLamp(stepInBar: number): void {
+  function handleStepLamp(
+    step: PatternStepDescriptor,
+    target: TargetNoteEvent,
+  ): void {
+    if (step.stepInBar === 0) {
+      updatePatternStepNoteLabels(target.expectedNote);
+    }
+    if (step.isTargetActive || step.stepInBar === 0) {
+      updateTargetNoteDisplay(
+        target.barNumber,
+        target.expectedNote,
+        step.octaveShift,
+      );
+    }
+
     patternCellElements.forEach((cell, idx) => {
-      if (idx === stepInBar) {
+      if (idx === step.stepInBar) {
         cell.classList.add('playhead-current');
       } else {
         cell.classList.remove('playhead-current');
@@ -590,18 +695,43 @@ function bootstrapGrooveLock(): void {
     });
   }
 
+  function clearTransportLamps(): void {
+    dom.beatLamps.forEach((lamp) => {
+      lamp.className = 'beat-lamp';
+    });
+    patternCellElements.forEach((cell) => {
+      cell.classList.remove('playhead-current');
+    });
+  }
+
+  function syncBassLineButtonUI(): void {
+    if (profile.bassGuideMode === 'off') {
+      dom.previewPatternBtn.textContent = 'Bass Line: OFF';
+      dom.previewPatternBtn.classList.remove('btn-active-run');
+    } else if (profile.bassGuideMode === 'call-response-1-1') {
+      dom.previewPatternBtn.textContent = 'Bass Line: ON (1:1)';
+      dom.previewPatternBtn.classList.add('btn-active-run');
+    } else if (profile.bassGuideMode === 'call-response-1-3') {
+      dom.previewPatternBtn.textContent = 'Bass Line: ON (1:3)';
+      dom.previewPatternBtn.classList.add('btn-active-run');
+    } else {
+      dom.previewPatternBtn.textContent = 'Bass Line: ON';
+      dom.previewPatternBtn.classList.add('btn-active-run');
+    }
+  }
+
   function toggleMetronomeUI(): void {
     if (engine.isMetronomeRunning()) {
       engine.stopMetronome();
       dom.toggleMetronomeBtn.textContent = 'Start Click (Space)';
       dom.toggleMetronomeBtn.classList.remove('btn-active-run');
-      dom.beatLamps.forEach((lamp) => {
-        lamp.className = 'beat-lamp';
-      });
-      patternCellElements.forEach((cell) => {
-        cell.classList.remove('playhead-current');
-      });
+      clearTransportLamps();
     } else {
+      if (!engine.isInputConnected()) {
+        void connectAudioInterface(
+          dom.deviceSelect.value || profile.selectedDeviceId,
+        );
+      }
       grader.clearTimeline();
       engine.startMetronome();
       dom.toggleMetronomeBtn.textContent = 'Stop Click (Space)';
@@ -778,6 +908,14 @@ function bootstrapGrooveLock(): void {
     engine.setTransportConfig({ soundMode: profile.soundMode });
   });
 
+  dom.bassGuideSelect.addEventListener('change', () => {
+    profile.bassGuideMode = dom.bassGuideSelect.value as BassGuideMode;
+    persistCurrentProfile();
+    engine.setTransportConfig({ bassGuideMode: profile.bassGuideMode });
+    syncBassLineButtonUI();
+    updateTargetNoteDisplay(engine.getCurrentBarNumber());
+  });
+
   dom.clickPlacementSelect.addEventListener('change', () => {
     profile.clickPlacement = dom.clickPlacementSelect
       .value as ClickPlacementMode;
@@ -791,6 +929,7 @@ function bootstrapGrooveLock(): void {
       10,
     ) as PocketFeelOffsetMs;
     persistCurrentProfile();
+    engine.setTransportConfig({ pocketCenterMs: profile.pocketCenterMs });
     updatePocketZoneVisual();
     renderSessionStats();
   });
@@ -822,6 +961,7 @@ function bootstrapGrooveLock(): void {
     persistCurrentProfile();
     engine.setTransportConfig({ drillMode: profile.drillMode });
     updateTargetNoteDisplay(engine.getCurrentBarNumber());
+    updatePatternStepNoteLabels(currentBarExpectedNote);
   });
 
   dom.instrumentRangeSelect.addEventListener('change', () => {
@@ -829,6 +969,26 @@ function bootstrapGrooveLock(): void {
       .value as InstrumentRange;
     persistCurrentProfile();
     engine.setDspConfig({ instrumentRange: profile.instrumentRange });
+    updateTargetNoteDisplay(engine.getCurrentBarNumber());
+    updatePatternStepNoteLabels(currentBarExpectedNote);
+  });
+
+  dom.previewPatternBtn.addEventListener('click', () => {
+    const turningOn = profile.bassGuideMode === 'off';
+    profile.bassGuideMode = turningOn ? 'always' : 'off';
+    dom.bassGuideSelect.value = profile.bassGuideMode;
+    persistCurrentProfile();
+    engine.setTransportConfig({ bassGuideMode: profile.bassGuideMode });
+    syncBassLineButtonUI();
+    updateTargetNoteDisplay(engine.getCurrentBarNumber());
+
+    if (turningOn && !engine.isMetronomeRunning()) {
+      toggleMetronomeUI();
+    } else if (!engine.isInputConnected()) {
+      void connectAudioInterface(
+        dom.deviceSelect.value || profile.selectedDeviceId,
+      );
+    }
   });
 
   dom.toggleMetronomeBtn.addEventListener('click', () => {

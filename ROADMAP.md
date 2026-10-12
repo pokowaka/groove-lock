@@ -31,13 +31,21 @@ reference clicks, playing syncopated groove patterns, and deliberately controlli
     - Zero-asset synthesized studio **Kick** (pitch-swept sine + click transient), **Snare** (body
       triangle + bandpass noise burst), and **Hi-Hat** (high-pass metallic noise network) routed
       through [`outputCtx`](./src/audio/audio-engine.ts).
+  - **Synthesized Reference Electric Bass & Call-and-Response Guide (`bassGuideMode`):**
+    - Fingerstyle P-Bass synthesis (`scheduleBassNote` in
+      [`src/audio/drum-synth.ts`](./src/audio/drum-synth.ts)) with musical sustain gate lengths
+      (`gateBeats`), octave pops (`octaveShift`), and pocket feel offset support.
+    - **Bass Line: ON / OFF Toggle:** Seamless live toggle of the synthesized bass groove for the
+      selected pattern, BPM, and target note without stopping playback.
+    - **Call & Response Practice (`call-response-1-1`, `call-response-1-3`, `always`):** Listen to
+      the reference bass play the demo bar, then lock in on the response bars.
 - **Syncopated Groove Pattern Library (`src/groove/patterns.ts`):**
   - Selectable rhythmic templates with rests and active target steps:
     - `uniform`: Uniform subdivision grid (Quarter, 8th, Triplet, 16th)
     - `motown-pocket`: Dotted-Quarter + Eighth Motown bass pocket (`1`, `2-&`, `3`, `4`)
     - `funk-16th`: Syncopated 16th-note funk pocket (`1`, `1-a`, `2-&`, `3`, `3-e`, `4-&`)
     - `shuffle-swing`: Swung 8th-note shuffle ($62\%$ triplet swing ratio)
-    - `octaves-8th`: Driving 8th-note pulse
+    - `octaves-8th`: Driving 8th-note Root + Octave pulse
   - **16-Step Bar Pattern Indicator:** Visual step sequencer strip showing active target steps and
     current beat/subdivision progress. Grading evaluates plucks against active pattern targets
     without penalizing bars where the player rests.
