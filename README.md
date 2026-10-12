@@ -12,8 +12,9 @@ real time so you can practice locking into the pocket.
 
 ```text
 groove-lock/
-├── index.html                  # Studio rack layout
+├── index.html                  # One-screen Play view, results card, Exercise & Setup drawers
 ├── ROADMAP.md                  # Multi-milestone product & engineering roadmap
+├── UX_VISION.md                # UX north star, design principles & phased UI plan
 ├── src/
 │   ├── DESIGN.md               # Architectural deep-dive & onboarding guide
 │   ├── dsp/                    # Pure Float32Array DSP (zero DOM/Web Audio coupling)
@@ -25,18 +26,34 @@ groove-lock/
 │   ├── audio/
 │   │   ├── capture.worklet.ts  # Real-time AudioWorkletProcessor running DSP in the audio thread
 │   │   ├── drum-synth.ts       # Procedural Web Audio Kick, Snare, Hi-Hat & Click synthesizer
-│   │   └── audio-engine.ts     # Dual-AudioContext hardware manager (inputCtx + outputCtx)
+│   │   └── audio-engine.ts     # Dual-AudioContext manager, scheduler, count-in & rounds
 │   ├── groove/
 │   │   ├── timeline.ts         # Universal TargetNoteEvent timeline & drill generators
 │   │   ├── patterns.ts         # Syncopated groove templates, swing & click placement modes
 │   │   ├── pocket-grader.ts    # Micro-timing offset, feel offset, Speed Trainer & jitter (σ)
+│   │   ├── scoring.ts          # Judgments, Groove Meter, streaks, round stars & coaching tips
+│   │   ├── tap-tempo.ts        # Tap tempo
 │   │   └── storage.ts          # Validated localStorage hardware & practice profile persistence
-│   ├── style.css               # Studio hardware rack stylesheet
+│   ├── ui/
+│   │   ├── timeline-lane.ts    # Canvas bar lane (first incarnation of the note highway)
+│   │   ├── pocket-meter.ts     # Canvas pocket ruler + session histogram
+│   │   ├── controls.ts         # Segmented controls & drawers
+│   │   ├── canvas-kit.ts       # Canvas helpers & palette
+│   │   └── demo-player.ts      # ?demo simulated player (preview without an instrument)
+│   ├── style.css               # Play view stylesheet
 │   └── main.ts                 # UI controller
 └── tests/
     ├── dsp.test.ts             # Vitest DSP suite (Open E1 41.2Hz sustain immunity, YIN, RTL)
-    └── pocket-grader.test.ts   # Vitest timing, groove pattern & pocket grading suite
+    ├── pocket-grader.test.ts   # Vitest timing, groove pattern & pocket grading suite
+    └── scoring.test.ts         # Vitest judgments, groove meter, round summary & tap tempo
 ```
+
+### Practicing
+
+Press **Space** (no mouse needed while you hold the bass): one bar count-in, an 8-bar round, a
+results card with stars and one coaching tip, then the next round starts automatically. `↑/↓` tempo
+(`Shift` ±5) · `T` tap tempo · `E` exercise · `S` setup · `R` reset · `Enter` next round now ·
+`Esc` stay. Open `http://127.0.0.1:8080/?demo` to preview with a simulated player.
 
 ### Key Technical Highlights
 
@@ -113,11 +130,11 @@ npm run build
 3. **Calibrating Output-to-Input Latency:**
    - **Patch Cable Loopback (Method B):** Connect a $\frac{1}{4}\text{"}$ instrument cable from the
      Scarlett's **Headphone Output** (or Line Output) into the front **$\frac{1}{4}\text{"}$
-     Instrument Input**, set output and gain knobs around 10–11 o'clock, and click **Auto-Ping
-     Loopback**.
+     Instrument Input**, set output and gain knobs around 10–11 o'clock, and click **Loopback
+     ping** in Setup (`S`).
    - **Magnetic Pickup Coupling (Method A):** Hold one headphone earcup directly over your
-     bass/guitar pickup (with instrument volume up and strings muted) and click **Auto-Ping
-     Loopback**.
+     bass/guitar pickup (with instrument volume up and strings muted) and click **Loopback
+     ping** in Setup (`S`).
 
 ---
 
