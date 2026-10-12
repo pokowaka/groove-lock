@@ -31,6 +31,31 @@ import captureWorkletUrl from './capture.worklet.ts?worker&url';
 import { StudioDrumSynth } from './drum-synth';
 
 /**
+ * One sound the engine scheduled on the output, logged while recording so the backing track can
+ * be re-rendered offline for playback. Times are on the `outputCtx` clock.
+ */
+export type ScheduledSound =
+  | { readonly kind: 'click'; readonly timeSec: number; readonly variant: 'downbeat' | 'quarter' | 'subdivision' }
+  | { readonly kind: 'kick' | 'snare' | 'hihat'; readonly timeSec: number; readonly level: number }
+  | {
+      readonly kind: 'bass';
+      readonly timeSec: number;
+      readonly freqHz: number;
+      readonly gateSec: number;
+      readonly level: number;
+    };
+
+/** A chunk of recorded instrument audio. */
+export interface RecordedPcmChunk {
+  /** `inputCtx` time of the first sample. */
+  readonly inputTimeSec: number;
+  /** `outputCtx.currentTime − inputCtx.currentTime` measured when the chunk arrived. */
+  readonly clockOffsetSec: number;
+  readonly sampleRate: number;
+  readonly samples: Float32Array;
+}
+
+/**
  * Extended `AudioContext` interface including Chromium's `setSinkId()` output routing API.
  */
 export interface SinkableAudioContext extends AudioContext {
@@ -79,6 +104,8 @@ export interface AudioEngineCallbacks {
   readonly onCountInBeat?: (beatInBar: number) => void;
   /** Called after the final graded bar of a round, its landing hit and a short grace period. */
   readonly onRoundComplete?: () => void;
+  /** Called with each recorded instrument chunk between `startRecording()` and `stopRecording()`. */
+  readonly onPcmChunk?: (chunk: RecordedPcmChunk) => void;
 }
 
 /**
@@ -141,6 +168,10 @@ export class AudioEngine {
   private roundBars = 0;
   private countInBeatsRemaining = 0;
   private roundFinishTimerId: number | null = null;
+
+  /** Scheduled sounds since `beginSoundLog()`, or `null` when not logging. */
+  private soundLog: ScheduledSound[] | null = null;
+  private recordStopResolvers: (() => void)[] = [];
 
   private channelMode: InputChannelMode = 'auto';
   private onsetThreshold = 0.035;
@@ -528,6 +559,20 @@ export class AudioEngine {
       });
     } else if (msg.type === 'loopback-complete') {
       this.callbacks.onLoopbackComplete(msg.summary);
+    } else if (msg.type === 'pcm') {
+      if (!this.outputCtx || !this.inputCtx) {
+        return;
+      }
+      this.callbacks.onPcmChunk?.({
+        inputTimeSec: msg.startTimeSec,
+        clockOffsetSec: this.outputCtx.currentTime - this.inputCtx.currentTime,
+        sampleRate: msg.sampleRate,
+        samples: msg.samples,
+      });
+    } else if (msg.type === 'record-stopped') {
+      const resolvers = this.recordStopResolvers;
+      this.recordStopResolvers = [];
+      resolvers.forEach((resolve) => resolve());
     }
   }
 
@@ -574,6 +619,62 @@ export class AudioEngine {
       window.clearTimeout(this.roundFinishTimerId);
       this.roundFinishTimerId = null;
     }
+  }
+
+  /**
+   * Starts streaming the instrument channel via `onPcmChunk`.
+   *
+   * @return `false` if no input is connected (nothing will be recorded).
+   */
+  public startRecording(): boolean {
+    if (!this.workletNode) {
+      return false;
+    }
+    const msg: MainToWorkletMessage = { type: 'start-record' };
+    this.workletNode.port.postMessage(msg);
+    return true;
+  }
+
+  /**
+   * Stops streaming; resolves once the final chunk has been delivered (or after a 500 ms timeout).
+   */
+  public stopRecording(): Promise<void> {
+    if (!this.workletNode) {
+      return Promise.resolve();
+    }
+    const done = new Promise<void>((resolve) => {
+      this.recordStopResolvers.push(resolve);
+      window.setTimeout(resolve, 500);
+    });
+    const msg: MainToWorkletMessage = { type: 'stop-record' };
+    this.workletNode.port.postMessage(msg);
+    return done;
+  }
+
+  /** Starts logging every sound the scheduler plays (count-in, groove, landing, reference bass). */
+  public beginSoundLog(): void {
+    this.soundLog = [];
+  }
+
+  /** Returns the sounds logged since `beginSoundLog()` and stops logging. */
+  public takeSoundLog(): ScheduledSound[] {
+    const log = this.soundLog ?? [];
+    this.soundLog = null;
+    return log;
+  }
+
+  private playClick(timeSec: number, variant: 'downbeat' | 'quarter' | 'subdivision'): void {
+    if (!this.outputCtx) return;
+    this.drumSynth.scheduleClick(this.outputCtx, timeSec, variant);
+    this.soundLog?.push({ kind: 'click', timeSec, variant });
+  }
+
+  private playDrum(kind: 'kick' | 'snare' | 'hihat', timeSec: number, level: number): void {
+    if (!this.outputCtx) return;
+    if (kind === 'kick') this.drumSynth.scheduleKick(this.outputCtx, timeSec, level);
+    else if (kind === 'snare') this.drumSynth.scheduleSnare(this.outputCtx, timeSec, level);
+    else this.drumSynth.scheduleHiHat(this.outputCtx, timeSec, level);
+    this.soundLog?.push({ kind, timeSec, level });
   }
 
   private runMetronomeScheduler(): void {
@@ -690,11 +791,7 @@ export class AudioEngine {
       });
     }
 
-    this.drumSynth.scheduleClick(
-      this.outputCtx,
-      timeSec,
-      beatInBar === 0 ? 'downbeat' : 'quarter',
-    );
+    this.playClick(timeSec, beatInBar === 0 ? 'downbeat' : 'quarter');
     this.runAtAudioTime(timeSec, () => {
       this.callbacks.onCountInBeat?.(beatInBar);
     });
@@ -718,10 +815,10 @@ export class AudioEngine {
     }
 
     if (this.soundMode === 'drums') {
-      this.drumSynth.scheduleKick(this.outputCtx, landingTimeSec, 0.62);
-      this.drumSynth.scheduleHiHat(this.outputCtx, landingTimeSec, 0.2);
+      this.playDrum('kick', landingTimeSec, 0.62);
+      this.playDrum('hihat', landingTimeSec, 0.2);
     } else {
-      this.drumSynth.scheduleClick(this.outputCtx, landingTimeSec, 'downbeat');
+      this.playClick(landingTimeSec, 'downbeat');
     }
 
     const graceSec = Math.max(0.3, 0.5 * (60.0 / this.bpm));
@@ -768,22 +865,22 @@ export class AudioEngine {
     if (this.soundMode === 'drums') {
       if (step.subIndex === 0) {
         if (step.beatInBar === 0 || step.beatInBar === 2) {
-          this.drumSynth.scheduleKick(this.outputCtx, timeSec, 0.58);
-          this.drumSynth.scheduleHiHat(this.outputCtx, timeSec, 0.14);
+          this.playDrum('kick', timeSec, 0.58);
+          this.playDrum('hihat', timeSec, 0.14);
         } else {
-          this.drumSynth.scheduleSnare(this.outputCtx, timeSec, 0.42);
-          this.drumSynth.scheduleHiHat(this.outputCtx, timeSec, 0.16);
+          this.playDrum('snare', timeSec, 0.42);
+          this.playDrum('hihat', timeSec, 0.16);
         }
       } else {
-        this.drumSynth.scheduleHiHat(this.outputCtx, timeSec, 0.12);
+        this.playDrum('hihat', timeSec, 0.12);
       }
     } else {
       if (step.subIndex === 0 && step.beatInBar === 0) {
-        this.drumSynth.scheduleClick(this.outputCtx, timeSec, 'downbeat');
+        this.playClick(timeSec, 'downbeat');
       } else if (step.subIndex === 0) {
-        this.drumSynth.scheduleClick(this.outputCtx, timeSec, 'quarter');
+        this.playClick(timeSec, 'quarter');
       } else {
-        this.drumSynth.scheduleClick(this.outputCtx, timeSec, 'subdivision');
+        this.playClick(timeSec, 'subdivision');
       }
     }
   }
@@ -811,13 +908,9 @@ export class AudioEngine {
         this.instrumentRange,
         step.octaveShift,
       );
-      this.drumSynth.scheduleBassNote(
-        this.outputCtx,
-        bassTimeSec,
-        freqHz,
-        step.gateBeats * secondsPerBeat,
-        0.38,
-      );
+      const gateSec = step.gateBeats * secondsPerBeat;
+      this.drumSynth.scheduleBassNote(this.outputCtx, bassTimeSec, freqHz, gateSec, 0.38);
+      this.soundLog?.push({ kind: 'bass', timeSec: bassTimeSec, freqHz, gateSec, level: 0.38 });
     }
 
     const delayMs = Math.max(

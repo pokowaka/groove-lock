@@ -132,6 +132,14 @@ export type MainToWorkletMessage =
       readonly emitTimesSec: readonly number[];
     }
   | {
+      /** Start streaming the selected instrument channel as `pcm` chunks. */
+      readonly type: 'start-record';
+    }
+  | {
+      /** Flush the pending chunk, stop streaming, then reply with `record-stopped`. */
+      readonly type: 'stop-record';
+    }
+  | {
       readonly type: 'stop-loopback';
     };
 
@@ -151,4 +159,16 @@ export type WorkletToMainMessage =
   | {
       readonly type: 'loopback-complete';
       readonly summary: LoopbackSummary;
+    }
+  | {
+      /** Raw mono instrument audio while recording. */
+      readonly type: 'pcm';
+      /** `inputCtx` time of the first sample. */
+      readonly startTimeSec: number;
+      readonly sampleRate: number;
+      readonly samples: Float32Array;
+    }
+  | {
+      /** Acknowledges `stop-record` after the final `pcm` chunk was posted. */
+      readonly type: 'record-stopped';
     };
