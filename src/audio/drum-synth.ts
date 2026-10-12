@@ -2,7 +2,9 @@
  * Pure Web Audio studio click, drum kit, and reference electric bass synthesizer (`src/audio/drum-synth.ts`).
  *
  * Synthesizes punchy, zero-latency studio Kick, Snare, Hi-Hat, Metronome Click, and
- * fingerstyle P-Bass reference notes procedurally on `outputCtx` without external audio sample files.
+ * fingerstyle P-Bass reference notes procedurally without external audio sample files. Works on any
+ * `BaseAudioContext`: the live `outputCtx`, or an `OfflineAudioContext` when re-rendering a recorded
+ * round for playback.
  */
 export class StudioDrumSynth {
   private noiseBuffer: AudioBuffer | null = null;
@@ -11,7 +13,7 @@ export class StudioDrumSynth {
   /**
    * Lazily generates and caches a 1-second white-noise `AudioBuffer` for snare and hi-hat synthesis.
    */
-  private getNoiseBuffer(ctx: AudioContext): AudioBuffer {
+  private getNoiseBuffer(ctx: BaseAudioContext): AudioBuffer {
     if (this.noiseBuffer && this.noiseBufferSampleRate === ctx.sampleRate) {
       return this.noiseBuffer;
     }
@@ -34,7 +36,7 @@ export class StudioDrumSynth {
    * `587.33 Hz` subdivision).
    */
   public scheduleClick(
-    ctx: AudioContext,
+    ctx: BaseAudioContext,
     timeSec: number,
     kind: 'downbeat' | 'quarter' | 'subdivision',
   ): void {
@@ -64,7 +66,7 @@ export class StudioDrumSynth {
    * - Pitch-swept sine fundamental (`140 Hz -> 46 Hz` in 65 ms)
    * - Short beater attack transient (`920 Hz -> 180 Hz` in 12 ms) for clear bass attack alignment
    */
-  public scheduleKick(ctx: AudioContext, timeSec: number, level = 0.55): void {
+  public scheduleKick(ctx: BaseAudioContext, timeSec: number, level = 0.55): void {
     const bodyOsc = ctx.createOscillator();
     const bodyGain = ctx.createGain();
     bodyOsc.type = 'sine';
@@ -100,7 +102,7 @@ export class StudioDrumSynth {
    * - Shell body triangle oscillator (`185 Hz -> 108 Hz`)
    * - High-passed snare wire noise burst (`1.1 kHz` highpass, 110 ms decay)
    */
-  public scheduleSnare(ctx: AudioContext, timeSec: number, level = 0.38): void {
+  public scheduleSnare(ctx: BaseAudioContext, timeSec: number, level = 0.38): void {
     const bodyOsc = ctx.createOscillator();
     const bodyGain = ctx.createGain();
     bodyOsc.type = 'triangle';
@@ -137,7 +139,7 @@ export class StudioDrumSynth {
    * Schedules a closed studio hi-hat tick at `timeSec` (`7 kHz` high-passed metallic burst).
    */
   public scheduleHiHat(
-    ctx: AudioContext,
+    ctx: BaseAudioContext,
     timeSec: number,
     level = 0.16,
   ): void {
@@ -167,14 +169,14 @@ export class StudioDrumSynth {
    *   `freqHz * 14` on the finger pluck attack down to `freqHz * 4.2` over 85 ms.
    * - Sustains for `gateDurationSec` before a smooth 22 ms left-hand finger mute release.
    *
-   * @param ctx Output `AudioContext`.
+   * @param ctx Output (or offline) audio context.
    * @param timeSec Exact start timestamp in `ctx.currentTime` seconds.
    * @param freqHz Fundamental bass frequency in Hz (e.g. `41.20` for E1).
    * @param gateDurationSec Musical note length in seconds before finger mute.
    * @param level Peak amplitude gain (default `0.38`).
    */
   public scheduleBassNote(
-    ctx: AudioContext,
+    ctx: BaseAudioContext,
     timeSec: number,
     freqHz: number,
     gateDurationSec: number,
