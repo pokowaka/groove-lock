@@ -1,4 +1,11 @@
 import type { InputChannelMode, InstrumentRange } from '../dsp/types';
+import type {
+  ClickPlacementMode,
+  GroovePatternId,
+  PocketFeelOffsetMs,
+  SoundEngineMode,
+  SpeedTrainerStep,
+} from './patterns';
 import type { DrillMode, GapClickMode, Subdivision } from './timeline';
 
 /**
@@ -17,12 +24,22 @@ export interface GrooveLockProfile {
   latencyCompensationMs: number;
   /** Metronome tempo in beats per minute (`40..200`). */
   bpm: number;
-  /** Subdivision grid steps per quarter-note beat (`1..4`). */
+  /** Subdivision grid steps per quarter-note beat (`1..4`) when `groovePattern === 'uniform'`. */
   subdivision: Subdivision;
-  /** In-the-pocket tolerance window in milliseconds (`10`, `16`, or `25`). */
+  /** Active rhythmic groove pattern template (`'uniform'`, `'motown-pocket'`, `'funk-16th'`, etc.). */
+  groovePattern: GroovePatternId;
+  /** Audible reference sound engine (`'click'` or `'drums'`). */
+  soundMode: SoundEngineMode;
+  /** Beat placement mode for clicks/drums (`'all'`, `'backbeat-2-4'`, `'one-drop-1'`, `'offbeat-and'`). */
+  clickPlacement: ClickPlacementMode;
+  /** In-the-pocket tolerance half-window in milliseconds (`10`, `16`, or `25`). */
   pocketWindowMs: number;
+  /** Intentional micro-timing feel center in milliseconds (`0`, `12`, or `-8`). */
+  pocketCenterMs: PocketFeelOffsetMs;
   /** Gap-click silent bar trainer mode (`0`, `1`, or `2`). */
   gapBars: GapClickMode;
+  /** Auto-tempo Speed Trainer increment (`0`, `2`, or `4` BPM per 4 clean bars). */
+  speedTrainerStep: SpeedTrainerStep;
   /** Active target note exercise (`'free'`, `'root-cycle'`, `'random-bar'`, `'fixed-e'`, `'fixed-a'`). */
   drillMode: DrillMode;
   /** Instrument pitch filter (`'bass'`, `'guitar'`, or `'full'`). */
@@ -42,8 +59,13 @@ export const DEFAULT_PROFILE: GrooveLockProfile = {
   latencyCompensationMs: 18,
   bpm: 90,
   subdivision: 1,
+  groovePattern: 'uniform',
+  soundMode: 'click',
+  clickPlacement: 'all',
   pocketWindowMs: 16,
+  pocketCenterMs: 0,
   gapBars: 0,
+  speedTrainerStep: 0,
   drillMode: 'free',
   instrumentRange: 'bass',
 };
@@ -98,16 +120,47 @@ export function loadProfile(): GrooveLockProfile {
         parsed.subdivision === 4
           ? parsed.subdivision
           : DEFAULT_PROFILE.subdivision,
+      groovePattern:
+        parsed.groovePattern === 'uniform' ||
+        parsed.groovePattern === 'motown-pocket' ||
+        parsed.groovePattern === 'funk-16th' ||
+        parsed.groovePattern === 'shuffle-swing' ||
+        parsed.groovePattern === 'octaves-8th'
+          ? parsed.groovePattern
+          : DEFAULT_PROFILE.groovePattern,
+      soundMode:
+        parsed.soundMode === 'click' || parsed.soundMode === 'drums'
+          ? parsed.soundMode
+          : DEFAULT_PROFILE.soundMode,
+      clickPlacement:
+        parsed.clickPlacement === 'all' ||
+        parsed.clickPlacement === 'backbeat-2-4' ||
+        parsed.clickPlacement === 'one-drop-1' ||
+        parsed.clickPlacement === 'offbeat-and'
+          ? parsed.clickPlacement
+          : DEFAULT_PROFILE.clickPlacement,
       pocketWindowMs:
         typeof parsed.pocketWindowMs === 'number' &&
         parsed.pocketWindowMs >= 5 &&
         parsed.pocketWindowMs <= 50
           ? parsed.pocketWindowMs
           : DEFAULT_PROFILE.pocketWindowMs,
+      pocketCenterMs:
+        parsed.pocketCenterMs === 0 ||
+        parsed.pocketCenterMs === 12 ||
+        parsed.pocketCenterMs === -8
+          ? parsed.pocketCenterMs
+          : DEFAULT_PROFILE.pocketCenterMs,
       gapBars:
         parsed.gapBars === 0 || parsed.gapBars === 1 || parsed.gapBars === 2
           ? parsed.gapBars
           : DEFAULT_PROFILE.gapBars,
+      speedTrainerStep:
+        parsed.speedTrainerStep === 0 ||
+        parsed.speedTrainerStep === 2 ||
+        parsed.speedTrainerStep === 4
+          ? parsed.speedTrainerStep
+          : DEFAULT_PROFILE.speedTrainerStep,
       drillMode:
         parsed.drillMode === 'free' ||
         parsed.drillMode === 'root-cycle' ||

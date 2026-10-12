@@ -7,6 +7,15 @@ import type {
   LoopbackSummary,
   MeterSnapshot,
 } from './dsp/types';
+import {
+  type ClickPlacementMode,
+  formatPatternSummary,
+  type GroovePatternId,
+  type PocketFeelOffsetMs,
+  resolvePatternBarSteps,
+  type SoundEngineMode,
+  type SpeedTrainerStep,
+} from './groove/patterns';
 import { type GradedPluckEntry, PocketGrader } from './groove/pocket-grader';
 import {
   type GrooveLockProfile,
@@ -59,9 +68,14 @@ function bootstrapGrooveLock(): void {
     latencyValueLabel: requireEl<HTMLSpanElement>('latency-value-label'),
     bpmInput: requireEl<HTMLInputElement>('bpm-input'),
     bpmDisplayVal: requireEl<HTMLSpanElement>('bpm-display-val'),
+    groovePatternSelect: requireEl<HTMLSelectElement>('groove-pattern-select'),
     subdivisionSelect: requireEl<HTMLSelectElement>('subdivision-select'),
+    soundModeSelect: requireEl<HTMLSelectElement>('sound-mode-select'),
+    clickPlacementSelect: requireEl<HTMLSelectElement>('click-placement-select'),
+    pocketFeelSelect: requireEl<HTMLSelectElement>('pocket-feel-select'),
     pocketWindowSelect: requireEl<HTMLSelectElement>('pocket-window-select'),
     gapModeSelect: requireEl<HTMLSelectElement>('gap-mode-select'),
+    speedTrainerSelect: requireEl<HTMLSelectElement>('speed-trainer-select'),
     activeGridSummary: requireEl<HTMLSpanElement>('active-grid-summary'),
     beatLamps: [
       requireEl<HTMLDivElement>('beat-lamp-0'),
@@ -69,9 +83,12 @@ function bootstrapGrooveLock(): void {
       requireEl<HTMLDivElement>('beat-lamp-2'),
       requireEl<HTMLDivElement>('beat-lamp-3'),
     ],
+    patternStepCountLabel: requireEl<HTMLSpanElement>('pattern-step-count-label'),
+    patternStepsStrip: requireEl<HTMLDivElement>('pattern-steps-strip'),
     lastOffsetMs: requireEl<HTMLDivElement>('last-offset-ms'),
     timingVerdictBadge: requireEl<HTMLSpanElement>('timing-verdict-badge'),
     pocketZoneBox: requireEl<HTMLDivElement>('pocket-zone-box'),
+    pocketCenterMarker: requireEl<HTMLDivElement>('pocket-center-marker'),
     hitMarkersLayer: requireEl<HTMLDivElement>('hit-markers-layer'),
     statPocketPct: requireEl<HTMLSpanElement>('stat-pocket-pct'),
     statMeanMs: requireEl<HTMLSpanElement>('stat-mean-ms'),
@@ -95,12 +112,14 @@ function bootstrapGrooveLock(): void {
   let isCalibrating = false;
   let calibrationOffsetsMs: number[] = [];
   let isLoopbackPinging = false;
+  let patternCellElements: HTMLDivElement[] = [];
 
   const engine = new AudioEngine({
     onMeter: handleMeterSnapshot,
     onPluck: handlePluckEvent,
     onTargetScheduled: handleTargetScheduled,
     onBeatLamp: handleBeatLamp,
+    onStepLamp: handleStepLamp,
     onLoopbackComplete: handleLoopbackComplete,
   });
 
@@ -116,24 +135,52 @@ function bootstrapGrooveLock(): void {
   }
 
   function updatePocketZoneVisual(): void {
+    const centerPct = 50 + (profile.pocketCenterMs / MAX_SCOPE_MS) * 50;
     const halfWidthPct = (profile.pocketWindowMs / MAX_SCOPE_MS) * 50;
-    const leftPct = 50 - halfWidthPct;
-    const widthPct = halfWidthPct * 2;
+    const leftPct = Math.max(0, centerPct - halfWidthPct);
+    const rightPct = Math.min(100, centerPct + halfWidthPct);
+    const widthPct = Math.max(0, rightPct - leftPct);
+
     dom.pocketZoneBox.style.left = `${leftPct.toFixed(2)}%`;
     dom.pocketZoneBox.style.width = `${widthPct.toFixed(2)}%`;
+    dom.pocketCenterMarker.style.left = `${centerPct.toFixed(2)}%`;
   }
 
   function updateGridSummaryText(): void {
-    const subLabels: Record<Subdivision, string> = {
-      1: 'Quarter Notes',
-      2: 'Eighth Notes',
-      3: 'Triplets',
-      4: 'Sixteenth Notes',
-    };
-    dom.activeGridSummary.textContent = `${profile.bpm} BPM · ${subLabels[profile.subdivision]}`;
+    dom.activeGridSummary.textContent = formatPatternSummary(
+      profile.bpm,
+      profile.groovePattern,
+      profile.subdivision,
+    );
   }
 
-  function updateTargetNoteDisplay(barNumber: number, overrideNote?: TargetNoteEvent['expectedNote']): void {
+  function renderPatternStepsStrip(): void {
+    const steps = resolvePatternBarSteps(
+      profile.groovePattern,
+      profile.subdivision,
+    );
+    const activeCount = steps.filter((s) => s.isTargetActive).length;
+    dom.patternStepCountLabel.textContent = `${activeCount}/${steps.length} Active Steps`;
+
+    // Enable/disable uniform subdivision dropdown depending on whether 'uniform' is selected
+    dom.subdivisionSelect.disabled = profile.groovePattern !== 'uniform';
+
+    dom.patternStepsStrip.replaceChildren();
+    patternCellElements = steps.map((step) => {
+      const cell = document.createElement('div');
+      cell.className = step.isTargetActive
+        ? 'pattern-step-cell target-active'
+        : 'pattern-step-cell target-rest';
+      cell.textContent = step.shortStepLabel;
+      dom.patternStepsStrip.appendChild(cell);
+      return cell;
+    });
+  }
+
+  function updateTargetNoteDisplay(
+    barNumber: number,
+    overrideNote?: TargetNoteEvent['expectedNote'],
+  ): void {
     const computed = computeBarTarget(profile.drillMode, barNumber);
     const noteToDisplay = overrideNote ?? computed.targetNote;
     dom.targetNoteName.textContent = noteToDisplay;
@@ -147,9 +194,14 @@ function bootstrapGrooveLock(): void {
     dom.latencyValueLabel.textContent = `${profile.latencyCompensationMs} ms`;
     dom.bpmInput.value = String(profile.bpm);
     dom.bpmDisplayVal.textContent = String(profile.bpm);
+    dom.groovePatternSelect.value = profile.groovePattern;
     dom.subdivisionSelect.value = String(profile.subdivision);
+    dom.soundModeSelect.value = profile.soundMode;
+    dom.clickPlacementSelect.value = profile.clickPlacement;
+    dom.pocketFeelSelect.value = String(profile.pocketCenterMs);
     dom.pocketWindowSelect.value = String(profile.pocketWindowMs);
     dom.gapModeSelect.value = String(profile.gapBars);
+    dom.speedTrainerSelect.value = String(profile.speedTrainerStep);
     dom.drillModeSelect.value = profile.drillMode;
     dom.instrumentRangeSelect.value = profile.instrumentRange;
 
@@ -161,6 +213,9 @@ function bootstrapGrooveLock(): void {
     engine.setTransportConfig({
       bpm: profile.bpm,
       subdivision: profile.subdivision,
+      groovePattern: profile.groovePattern,
+      soundMode: profile.soundMode,
+      clickPlacement: profile.clickPlacement,
       gapBars: profile.gapBars,
       drillMode: profile.drillMode,
     });
@@ -168,6 +223,7 @@ function bootstrapGrooveLock(): void {
     updateThresholdMarkerPosition();
     updatePocketZoneVisual();
     updateGridSummaryText();
+    renderPatternStepsStrip();
     updateTargetNoteDisplay(0);
   }
 
@@ -209,7 +265,10 @@ function bootstrapGrooveLock(): void {
     sinkDeviceId: string,
     playConfirmationTick: boolean,
   ): Promise<void> {
-    const status = await engine.applyOutputDevice(sinkDeviceId, playConfirmationTick);
+    const status = await engine.applyOutputDevice(
+      sinkDeviceId,
+      playConfirmationTick,
+    );
     if (status === 'direct') {
       dom.outputSinkStatus.textContent = 'Direct Output';
     } else if (status === 'default') {
@@ -221,7 +280,9 @@ function bootstrapGrooveLock(): void {
     }
   }
 
-  async function connectAudioInterface(requestedDeviceId: string): Promise<void> {
+  async function connectAudioInterface(
+    requestedDeviceId: string,
+  ): Promise<void> {
     try {
       dom.audioStatusText.textContent = 'Connecting...';
       dom.audioLed.className = 'led-dot warn';
@@ -280,6 +341,22 @@ function bootstrapGrooveLock(): void {
     grader.pushTargetEvent(event);
     if (event.beatInBar === 0 && event.subIndex === 0) {
       updateTargetNoteDisplay(event.barNumber, event.expectedNote);
+
+      // Check Auto-Tempo Speed Trainer at bar boundaries
+      if (
+        profile.speedTrainerStep > 0 &&
+        grader.consumeSpeedTrainerStepUpIfReady(4, 0.85)
+      ) {
+        const nextBpm = Math.min(200, profile.bpm + profile.speedTrainerStep);
+        if (nextBpm !== profile.bpm) {
+          profile.bpm = nextBpm;
+          persistCurrentProfile();
+          dom.bpmInput.value = String(profile.bpm);
+          dom.bpmDisplayVal.textContent = String(profile.bpm);
+          engine.setTransportConfig({ bpm: profile.bpm });
+          updateGridSummaryText();
+        }
+      }
     }
   }
 
@@ -295,6 +372,16 @@ function bootstrapGrooveLock(): void {
       }
       if (idx === beatInBar) {
         lamp.classList.add(idx === 0 ? 'active-downbeat' : 'active-beat');
+      }
+    });
+  }
+
+  function handleStepLamp(stepInBar: number): void {
+    patternCellElements.forEach((cell, idx) => {
+      if (idx === stepInBar) {
+        cell.classList.add('playhead-current');
+      } else {
+        cell.classList.remove('playhead-current');
       }
     });
   }
@@ -330,8 +417,9 @@ function bootstrapGrooveLock(): void {
     const graded = grader.evaluatePluck(pluck, {
       latencyCompensationMs: profile.latencyCompensationMs,
       bpm: profile.bpm,
-      subdivision: profile.subdivision,
+      subdivision: engine.getEffectiveSubdivision(),
       pocketWindowMs: profile.pocketWindowMs,
+      pocketCenterMs: profile.pocketCenterMs,
     });
 
     if (!graded) {
@@ -350,18 +438,24 @@ function bootstrapGrooveLock(): void {
 
     if (entry.verdict === 'pocket') {
       dom.lastOffsetMs.style.color = 'var(--accent-pocket)';
-      dom.timingVerdictBadge.textContent = 'IN THE POCKET';
+      dom.timingVerdictBadge.textContent =
+        profile.pocketCenterMs === 0
+          ? 'IN THE POCKET'
+          : profile.pocketCenterMs > 0
+            ? 'LAID-BACK POCKET LOCK'
+            : 'PUSHED POCKET LOCK';
       dom.timingVerdictBadge.style.backgroundColor = 'var(--accent-pocket-dim)';
       dom.timingVerdictBadge.style.color = 'var(--accent-pocket)';
     } else if (entry.verdict === 'rushing') {
       dom.lastOffsetMs.style.color = 'var(--accent-rush)';
-      dom.timingVerdictBadge.textContent = `RUSHING (${Math.abs(entry.offsetMs).toFixed(0)} ms EARLY)`;
+      dom.timingVerdictBadge.textContent = `RUSHING (${Math.abs(entry.feelDeltaMs).toFixed(0)} ms EARLY)`;
       dom.timingVerdictBadge.style.backgroundColor = 'hsla(14, 82%, 58%, 0.16)';
       dom.timingVerdictBadge.style.color = 'var(--accent-rush)';
     } else {
       dom.lastOffsetMs.style.color = 'var(--accent-drag)';
-      dom.timingVerdictBadge.textContent = `DRAGGING (+${entry.offsetMs.toFixed(0)} ms LATE)`;
-      dom.timingVerdictBadge.style.backgroundColor = 'hsla(202, 78%, 56%, 0.16)';
+      dom.timingVerdictBadge.textContent = `DRAGGING (+${entry.feelDeltaMs.toFixed(0)} ms LATE)`;
+      dom.timingVerdictBadge.style.backgroundColor =
+        'hsla(202, 78%, 56%, 0.16)';
       dom.timingVerdictBadge.style.color = 'var(--accent-drag)';
     }
 
@@ -382,13 +476,16 @@ function bootstrapGrooveLock(): void {
       const pip = document.createElement('div');
       pip.className = idx === 0 ? 'hit-pip latest' : 'hit-pip';
 
-      const clamped = Math.max(-MAX_SCOPE_MS, Math.min(MAX_SCOPE_MS, item.offsetMs));
+      const clamped = Math.max(
+        -MAX_SCOPE_MS,
+        Math.min(MAX_SCOPE_MS, item.offsetMs),
+      );
       const leftPct = 50 + (clamped / MAX_SCOPE_MS) * 50;
       pip.style.left = `${leftPct.toFixed(2)}%`;
 
       if (item.inPocket) {
         pip.style.backgroundColor = 'var(--accent-pocket)';
-      } else if (item.offsetMs < 0) {
+      } else if (item.verdict === 'rushing') {
         pip.style.backgroundColor = 'var(--accent-rush)';
       } else {
         pip.style.backgroundColor = 'var(--accent-drag)';
@@ -401,10 +498,18 @@ function bootstrapGrooveLock(): void {
   }
 
   function renderSessionStats(): void {
-    const stats = grader.getStats(profile.pocketWindowMs);
+    const stats = grader.getStats(
+      profile.pocketWindowMs,
+      profile.pocketCenterMs,
+    );
     dom.statTotalHits.textContent = String(stats.totalHits);
 
-    if (stats.totalHits === 0 || stats.inPocketPct === null || stats.meanOffsetMs === null || stats.stdDevMs === null) {
+    if (
+      stats.totalHits === 0 ||
+      stats.inPocketPct === null ||
+      stats.meanOffsetMs === null ||
+      stats.stdDevMs === null
+    ) {
       dom.statPocketPct.textContent = '--%';
       dom.statMeanMs.textContent = '-- ms';
       dom.statJitterMs.textContent = '-- ms';
@@ -418,7 +523,9 @@ function bootstrapGrooveLock(): void {
     dom.statJitterMs.textContent = `±${stats.stdDevMs.toFixed(1)} ms`;
 
     if (stats.noteAttempts > 0) {
-      const notePct = Math.round((stats.noteMatches / stats.noteAttempts) * 100);
+      const notePct = Math.round(
+        (stats.noteMatches / stats.noteAttempts) * 100,
+      );
       dom.noteHitRatio.textContent = `Note Match: ${stats.noteMatches}/${stats.noteAttempts} (${notePct}%)`;
     } else {
       dom.noteHitRatio.textContent = 'Note Match: Free Mode';
@@ -432,7 +539,8 @@ function bootstrapGrooveLock(): void {
     if (history.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'history-empty';
-      empty.textContent = 'Enable Scarlett input and start the click to log your notes.';
+      empty.textContent =
+        'Enable Scarlett input and start the click to log your notes.';
       dom.historyRowsBody.appendChild(empty);
       return;
     }
@@ -455,7 +563,7 @@ function bootstrapGrooveLock(): void {
       cOffset.textContent = `${sign}${entry.offsetMs.toFixed(1)} ms`;
       cOffset.style.color = entry.inPocket
         ? 'var(--accent-pocket)'
-        : entry.offsetMs < 0
+        : entry.verdict === 'rushing'
           ? 'var(--accent-rush)'
           : 'var(--accent-drag)';
 
@@ -466,7 +574,7 @@ function bootstrapGrooveLock(): void {
       } else if (entry.inPocket) {
         cVerdict.textContent = 'Locked in Pocket';
         cVerdict.style.color = 'var(--accent-pocket)';
-      } else if (entry.offsetMs < 0) {
+      } else if (entry.verdict === 'rushing') {
         cVerdict.textContent = 'Rushing';
         cVerdict.style.color = 'var(--accent-rush)';
       } else {
@@ -489,6 +597,9 @@ function bootstrapGrooveLock(): void {
       dom.toggleMetronomeBtn.classList.remove('btn-active-run');
       dom.beatLamps.forEach((lamp) => {
         lamp.className = 'beat-lamp';
+      });
+      patternCellElements.forEach((cell) => {
+        cell.classList.remove('playhead-current');
       });
     } else {
       grader.clearTimeline();
@@ -596,7 +707,9 @@ function bootstrapGrooveLock(): void {
 
   // Wire up event listeners
   dom.connectAudioBtn.addEventListener('click', () => {
-    void connectAudioInterface(dom.deviceSelect.value || profile.selectedDeviceId);
+    void connectAudioInterface(
+      dom.deviceSelect.value || profile.selectedDeviceId,
+    );
   });
 
   dom.deviceSelect.addEventListener('change', () => {
@@ -638,11 +751,48 @@ function bootstrapGrooveLock(): void {
     updateGridSummaryText();
   });
 
-  dom.subdivisionSelect.addEventListener('change', () => {
-    profile.subdivision = parseInt(dom.subdivisionSelect.value, 10) as Subdivision;
+  dom.groovePatternSelect.addEventListener('change', () => {
+    profile.groovePattern = dom.groovePatternSelect.value as GroovePatternId;
     persistCurrentProfile();
+    grader.clearTimeline();
+    engine.setTransportConfig({ groovePattern: profile.groovePattern });
+    updateGridSummaryText();
+    renderPatternStepsStrip();
+  });
+
+  dom.subdivisionSelect.addEventListener('change', () => {
+    profile.subdivision = parseInt(
+      dom.subdivisionSelect.value,
+      10,
+    ) as Subdivision;
+    persistCurrentProfile();
+    grader.clearTimeline();
     engine.setTransportConfig({ subdivision: profile.subdivision });
     updateGridSummaryText();
+    renderPatternStepsStrip();
+  });
+
+  dom.soundModeSelect.addEventListener('change', () => {
+    profile.soundMode = dom.soundModeSelect.value as SoundEngineMode;
+    persistCurrentProfile();
+    engine.setTransportConfig({ soundMode: profile.soundMode });
+  });
+
+  dom.clickPlacementSelect.addEventListener('change', () => {
+    profile.clickPlacement = dom.clickPlacementSelect
+      .value as ClickPlacementMode;
+    persistCurrentProfile();
+    engine.setTransportConfig({ clickPlacement: profile.clickPlacement });
+  });
+
+  dom.pocketFeelSelect.addEventListener('change', () => {
+    profile.pocketCenterMs = parseInt(
+      dom.pocketFeelSelect.value,
+      10,
+    ) as PocketFeelOffsetMs;
+    persistCurrentProfile();
+    updatePocketZoneVisual();
+    renderSessionStats();
   });
 
   dom.pocketWindowSelect.addEventListener('change', () => {
@@ -658,6 +808,15 @@ function bootstrapGrooveLock(): void {
     engine.setTransportConfig({ gapBars: profile.gapBars });
   });
 
+  dom.speedTrainerSelect.addEventListener('change', () => {
+    profile.speedTrainerStep = parseInt(
+      dom.speedTrainerSelect.value,
+      10,
+    ) as SpeedTrainerStep;
+    persistCurrentProfile();
+    grader.resetSpeedTrainerWindow();
+  });
+
   dom.drillModeSelect.addEventListener('change', () => {
     profile.drillMode = dom.drillModeSelect.value as DrillMode;
     persistCurrentProfile();
@@ -666,7 +825,8 @@ function bootstrapGrooveLock(): void {
   });
 
   dom.instrumentRangeSelect.addEventListener('change', () => {
-    profile.instrumentRange = dom.instrumentRangeSelect.value as InstrumentRange;
+    profile.instrumentRange = dom.instrumentRangeSelect
+      .value as InstrumentRange;
     persistCurrentProfile();
     engine.setDspConfig({ instrumentRange: profile.instrumentRange });
   });

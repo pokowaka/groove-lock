@@ -13,7 +13,9 @@ real time so you can practice locking into the pocket.
 ```text
 groove-lock/
 ├── index.html                  # Studio rack layout
+├── ROADMAP.md                  # Multi-milestone product & engineering roadmap
 ├── src/
+│   ├── DESIGN.md               # Architectural deep-dive & onboarding guide
 │   ├── dsp/                    # Pure Float32Array DSP (zero DOM/Web Audio coupling)
 │   │   ├── types.ts            # Discriminated unions for main <-> worklet messaging
 │   │   ├── pitch-utils.ts      # Frequency <-> MIDI / cents math & Circle of Fourths
@@ -22,16 +24,18 @@ groove-lock/
 │   │   └── loopback.ts         # Sample-accurate 1760 Hz sonar ping RTL detector
 │   ├── audio/
 │   │   ├── capture.worklet.ts  # Real-time AudioWorkletProcessor running DSP in the audio thread
+│   │   ├── drum-synth.ts       # Procedural Web Audio Kick, Snare, Hi-Hat & Click synthesizer
 │   │   └── audio-engine.ts     # Dual-AudioContext hardware manager (inputCtx + outputCtx)
 │   ├── groove/
 │   │   ├── timeline.ts         # Universal TargetNoteEvent timeline & drill generators
-│   │   ├── pocket-grader.ts    # Micro-timing offset, mean tendency & jitter (σ) evaluator
+│   │   ├── patterns.ts         # Syncopated groove templates, swing & click placement modes
+│   │   ├── pocket-grader.ts    # Micro-timing offset, feel offset, Speed Trainer & jitter (σ)
 │   │   └── storage.ts          # Validated localStorage hardware & practice profile persistence
 │   ├── style.css               # Studio hardware rack stylesheet
 │   └── main.ts                 # UI controller
 └── tests/
     ├── dsp.test.ts             # Vitest DSP suite (Open E1 41.2Hz sustain immunity, YIN, RTL)
-    └── pocket-grader.test.ts   # Vitest timing & pocket grading suite
+    └── pocket-grader.test.ts   # Vitest timing, groove pattern & pocket grading suite
 ```
 
 ### Key Technical Highlights
@@ -43,6 +47,16 @@ groove-lock/
   - Prevents low bass fundamentals (such as open $\text{E}_1 = 41.2\text{ Hz}$, whose
     $24.3\text{ ms}$ wave period spans multiple 128-sample blocks) from ever false-triggering on
     waveform zero-crossings.
+- **The Pocket Laboratory (`src/groove/patterns.ts` & `src/audio/drum-synth.ts`):**
+  - **Synthesized Studio Drum Kit:** Zero-asset procedural Kick, Snare, and Hi-Hat synthesis so
+    bassists can lock into a kick/snare groove instead of a sterile beep.
+  - **Click Placement Modes:** Practice with All 4 Beats, **Backbeat Only (Beats 2 & 4)**,
+    **One-Drop (Beat 1 Only)**, or **Off-Beat `&` Only**.
+  - **Syncopated Groove Patterns & 16-Step Indicator:** Built-in Motown (`1, 2-&, 3, 4`), Funk 16th
+    syncopation, $62\%$ Swung Shuffle, and 8th-note pulse templates with a live visual step strip.
+  - **Intentional Pocket Feel Offset & Speed Trainer:** Shift the target pocket zone to **Laid-Back
+    ($+12\text{ ms}$)** or **Pushed ($-8\text{ ms}$)**, and automatically step up $+2/+4\text{ BPM}$
+    every 4 clean bars ($\ge 85\%$ in-pocket).
 - **Independent Input & Output `AudioContext` Routing (`src/audio/audio-engine.ts`):**
   - Decouples the input capture `AudioContext` (using a zero-output `AudioWorkletNode` so the
     browser never plays back delayed instrument audio) from the output metronome `AudioContext`,
@@ -54,7 +68,7 @@ groove-lock/
     precision.
 - **Universal `TargetNoteEvent` Timeline (`src/groove/timeline.ts`):**
   - Designed to support both procedural metronome drills today and timed external song/tab beatmaps
-    in future iterations.
+    in future iterations (see [`ROADMAP.md`](./ROADMAP.md) and [`src/DESIGN.md`](./src/DESIGN.md)).
 
 ---
 

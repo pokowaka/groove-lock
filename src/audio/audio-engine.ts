@@ -8,15 +8,23 @@ import type {
   WorkletToMainMessage,
 } from '../dsp/types';
 import {
+  type ClickPlacementMode,
+  type GroovePatternId,
+  isStepAudible,
+  type PatternStepDescriptor,
+  resolvePatternBarSteps,
+  type SoundEngineMode,
+} from '../groove/patterns';
+import {
   computeBarTarget,
   type DrillMode,
-  formatBeatLabel,
   type GapClickMode,
   isBarSilentInGapMode,
   type Subdivision,
   type TargetNoteEvent,
 } from '../groove/timeline';
 import captureWorkletUrl from './capture.worklet.ts?worker&url';
+import { StudioDrumSynth } from './drum-synth';
 
 /**
  * Extended `AudioContext` interface including Chromium's `setSinkId()` output routing API.
@@ -43,11 +51,17 @@ export interface AudioEngineCallbacks {
   readonly onMeter: (snapshot: MeterSnapshot) => void;
   /** Called whenever a plucked note has been detected and pitch-analyzed, with its timestamp translated to `outputCtx` time. */
   readonly onPluck: (event: DetectedPluckEvent) => void;
-  /** Called whenever the lookahead metronome schedules a new `TargetNoteEvent`. */
+  /** Called whenever the lookahead metronome schedules an active `TargetNoteEvent`. */
   readonly onTargetScheduled: (event: TargetNoteEvent) => void;
   /** Called on exact quarter-note boundaries to illuminate the 4-beat visual rack lamps. */
   readonly onBeatLamp: (
     beatInBar: number,
+    barNumber: number,
+    isSilentGapBar: boolean,
+  ) => void;
+  /** Called on every pattern step boundary to animate the Bar Pattern Step Indicator. */
+  readonly onStepLamp?: (
+    stepInBar: number,
     barNumber: number,
     isSilentGapBar: boolean,
   ) => void;
@@ -57,7 +71,7 @@ export interface AudioEngineCallbacks {
 
 /**
  * Manages the dual-`AudioContext` hardware architecture, Web Audio lookahead metronome
- * scheduler, and sample-accurate loopback calibration.
+ * & synthesized drum scheduler, and sample-accurate loopback calibration.
  *
  * ### Why Two Separate `AudioContext` Instances?
  * In Chromium on macOS/Windows, calling `ctx.createMediaStreamSource(usbInputStream)`
@@ -68,7 +82,7 @@ export interface AudioEngineCallbacks {
  * By isolating:
  * - **`inputCtx`** (`setSinkId({ type: 'none' })` + zero-output `AudioWorkletNode`) for
  *   Scarlett Solo capture & DSP analysis, and
- * - **`outputCtx`** (`setSinkId(sinkDeviceId)`) exclusively for click track and sonar ping playback,
+ * - **`outputCtx`** (`setSinkId(sinkDeviceId)`) exclusively for click/drum track and sonar ping playback,
  *
  * GrooveLock guarantees zero browser instrument playback echo and instant, hot-swappable
  * output routing across any combination of USB audio interfaces and DACs.
@@ -81,14 +95,20 @@ export class AudioEngine {
   private workletNode: AudioWorkletNode | null = null;
   private workletModuleLoaded = false;
 
+  private readonly drumSynth = new StudioDrumSynth();
+
   private isRunning = false;
   private schedulerTimerId: number | null = null;
-  private currentStepIndex = 0;
+  private currentStepInBar = 0;
   private currentBarNumber = 0;
   private nextNoteTimeSec = 0;
+  private hasStartedFirstStep = false;
 
   private bpm = 90;
   private subdivision: Subdivision = 1;
+  private groovePattern: GroovePatternId = 'uniform';
+  private soundMode: SoundEngineMode = 'click';
+  private clickPlacement: ClickPlacementMode = 'all';
   private gapBars: GapClickMode = 0;
   private drillMode: DrillMode = 'free';
   private activeBarTargetNote: TargetNoteEvent['expectedNote'] = 'ANY';
@@ -129,11 +149,23 @@ export class AudioEngine {
   }
 
   /**
-   * Updates metronome tempo, subdivision grid, gap-click mode, or note exercise mode.
+   * Returns the effective subdivision density for the currently selected groove pattern.
+   */
+  public getEffectiveSubdivision(): Subdivision {
+    const steps = resolvePatternBarSteps(this.groovePattern, this.subdivision);
+    return steps[0]?.subdivision ?? this.subdivision;
+  }
+
+  /**
+   * Updates metronome tempo, subdivision grid, groove pattern, sound engine, click placement,
+   * gap-click mode, or note exercise mode.
    */
   public setTransportConfig(config: {
     bpm?: number;
     subdivision?: Subdivision;
+    groovePattern?: GroovePatternId;
+    soundMode?: SoundEngineMode;
+    clickPlacement?: ClickPlacementMode;
     gapBars?: GapClickMode;
     drillMode?: DrillMode;
   }): void {
@@ -142,6 +174,16 @@ export class AudioEngine {
     }
     if (config.subdivision !== undefined) {
       this.subdivision = config.subdivision;
+    }
+    if (config.groovePattern !== undefined) {
+      this.groovePattern = config.groovePattern;
+      this.currentStepInBar = 0;
+    }
+    if (config.soundMode !== undefined) {
+      this.soundMode = config.soundMode;
+    }
+    if (config.clickPlacement !== undefined) {
+      this.clickPlacement = config.clickPlacement;
     }
     if (config.gapBars !== undefined) {
       this.gapBars = config.gapBars;
@@ -286,15 +328,7 @@ export class AudioEngine {
         await this.outputCtx.resume();
       }
       const t = this.outputCtx.currentTime + 0.02;
-      const osc = this.outputCtx.createOscillator();
-      const gain = this.outputCtx.createGain();
-      osc.frequency.setValueAtTime(1046.5, t);
-      gain.gain.setValueAtTime(0.22, t);
-      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.045);
-      osc.connect(gain);
-      gain.connect(this.outputCtx.destination);
-      osc.start(t);
-      osc.stop(t + 0.05);
+      this.drumSynth.scheduleClick(this.outputCtx, t, 'downbeat');
     }
 
     return status;
@@ -442,8 +476,9 @@ export class AudioEngine {
     }
 
     this.isRunning = true;
-    this.currentStepIndex = 0;
+    this.currentStepInBar = 0;
     this.currentBarNumber = 0;
+    this.hasStartedFirstStep = false;
     this.nextNoteTimeSec = this.outputCtx.currentTime + 0.06;
     this.activeBarTargetNote = computeBarTarget(this.drillMode, 0).targetNote;
 
@@ -473,87 +508,122 @@ export class AudioEngine {
       this.nextNoteTimeSec <
       this.outputCtx.currentTime + scheduleAheadSec
     ) {
-      const totalStepsPerBar = 4 * this.subdivision;
-      const stepInBar = this.currentStepIndex % totalStepsPerBar;
-      const beatInBar = Math.floor(stepInBar / this.subdivision);
-      const subIndex = stepInBar % this.subdivision;
+      const barSteps = resolvePatternBarSteps(
+        this.groovePattern,
+        this.subdivision,
+      );
+      if (this.currentStepInBar >= barSteps.length) {
+        this.currentStepInBar = 0;
+      }
 
-      if (stepInBar === 0 && this.currentStepIndex > 0) {
+      if (this.currentStepInBar === 0 && this.hasStartedFirstStep) {
         this.currentBarNumber++;
         this.activeBarTargetNote = computeBarTarget(
           this.drillMode,
           this.currentBarNumber,
         ).targetNote;
       }
+      this.hasStartedFirstStep = true;
 
+      const step = barSteps[this.currentStepInBar];
       const isSilentGapBar = isBarSilentInGapMode(
         this.currentBarNumber,
         this.gapBars,
       );
 
       const targetEvent: TargetNoteEvent = {
-        id: `${this.currentBarNumber}:${beatInBar}:${subIndex}`,
+        id: `${this.currentBarNumber}:${step.beatInBar}:${step.subIndex}`,
         timeSec: this.nextNoteTimeSec,
         barNumber: this.currentBarNumber,
-        beatInBar,
-        subIndex,
-        beatLabel: formatBeatLabel(beatInBar, subIndex),
+        beatInBar: step.beatInBar,
+        subIndex: step.subIndex,
+        beatLabel: step.beatLabel,
         expectedNote: this.activeBarTargetNote,
         isSilentGapBar,
       };
 
-      this.scheduleClickAudioAndLamp(targetEvent);
-      this.callbacks.onTargetScheduled(targetEvent);
+      this.scheduleStepAudioAndLamps(step, targetEvent);
+      if (step.isTargetActive) {
+        this.callbacks.onTargetScheduled(targetEvent);
+      }
 
       const secondsPerBeat = 60.0 / this.bpm;
-      this.nextNoteTimeSec += secondsPerBeat / this.subdivision;
-      this.currentStepIndex++;
+      this.nextNoteTimeSec += secondsPerBeat * step.durationBeats;
+      this.currentStepInBar = (this.currentStepInBar + 1) % barSteps.length;
     }
   }
 
-  private scheduleClickAudioAndLamp(target: TargetNoteEvent): void {
+  private scheduleStepAudioAndLamps(
+    step: PatternStepDescriptor,
+    target: TargetNoteEvent,
+  ): void {
     if (!this.outputCtx) {
       return;
     }
 
-    if (!target.isSilentGapBar) {
-      const osc = this.outputCtx.createOscillator();
-      const gain = this.outputCtx.createGain();
+    const audible = isStepAudible(
+      step,
+      this.clickPlacement,
+      target.isSilentGapBar,
+    );
 
-      if (target.subIndex === 0 && target.beatInBar === 0) {
-        osc.frequency.setValueAtTime(1320, target.timeSec);
-        gain.gain.setValueAtTime(0.32, target.timeSec);
-      } else if (target.subIndex === 0) {
-        osc.frequency.setValueAtTime(880, target.timeSec);
-        gain.gain.setValueAtTime(0.22, target.timeSec);
+    if (audible) {
+      if (this.soundMode === 'drums') {
+        if (step.subIndex === 0) {
+          if (step.beatInBar === 0 || step.beatInBar === 2) {
+            this.drumSynth.scheduleKick(this.outputCtx, target.timeSec, 0.58);
+            this.drumSynth.scheduleHiHat(this.outputCtx, target.timeSec, 0.14);
+          } else {
+            this.drumSynth.scheduleSnare(this.outputCtx, target.timeSec, 0.42);
+            this.drumSynth.scheduleHiHat(this.outputCtx, target.timeSec, 0.16);
+          }
+        } else {
+          this.drumSynth.scheduleHiHat(this.outputCtx, target.timeSec, 0.12);
+        }
       } else {
-        osc.frequency.setValueAtTime(587.33, target.timeSec);
-        gain.gain.setValueAtTime(0.09, target.timeSec);
+        if (step.subIndex === 0 && step.beatInBar === 0) {
+          this.drumSynth.scheduleClick(
+            this.outputCtx,
+            target.timeSec,
+            'downbeat',
+          );
+        } else if (step.subIndex === 0) {
+          this.drumSynth.scheduleClick(
+            this.outputCtx,
+            target.timeSec,
+            'quarter',
+          );
+        } else {
+          this.drumSynth.scheduleClick(
+            this.outputCtx,
+            target.timeSec,
+            'subdivision',
+          );
+        }
       }
-
-      gain.gain.exponentialRampToValueAtTime(0.0008, target.timeSec + 0.032);
-      osc.connect(gain);
-      gain.connect(this.outputCtx.destination);
-      osc.start(target.timeSec);
-      osc.stop(target.timeSec + 0.036);
     }
 
-    if (target.subIndex === 0) {
-      const delayMs = Math.max(
-        0,
-        (target.timeSec - this.outputCtx.currentTime) * 1000,
-      );
-      window.setTimeout(() => {
-        if (!this.isRunning) {
-          return;
-        }
+    const delayMs = Math.max(
+      0,
+      (target.timeSec - this.outputCtx.currentTime) * 1000,
+    );
+    window.setTimeout(() => {
+      if (!this.isRunning) {
+        return;
+      }
+      if (step.subIndex === 0) {
         this.callbacks.onBeatLamp(
           target.beatInBar,
           target.barNumber,
           target.isSilentGapBar,
         );
-      }, delayMs);
-    }
+      }
+      this.callbacks.onStepLamp?.(
+        step.stepInBar,
+        target.barNumber,
+        target.isSilentGapBar,
+      );
+    }, delayMs);
   }
 
   /**

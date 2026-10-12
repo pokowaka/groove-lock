@@ -2,10 +2,10 @@ import type { DetectedPluckEvent, NoteClass } from '../dsp/types';
 import type { Subdivision, TargetNoteEvent } from './timeline';
 
 /**
- * Micro-timing classification relative to the nearest `TargetNoteEvent`:
- * - `'pocket'`: Within `±pocketWindowMs` of the grid beat.
- * - `'rushing'`: Played early (`offsetMs < -pocketWindowMs`).
- * - `'dragging'`: Played late (`offsetMs > +pocketWindowMs`).
+ * Micro-timing classification relative to the nearest `TargetNoteEvent` and `pocketCenterMs`:
+ * - `'pocket'`: Within `[pocketCenterMs - pocketWindowMs, pocketCenterMs + pocketWindowMs]`.
+ * - `'rushing'`: Played earlier than the target pocket zone (`offsetMs < pocketCenterMs - pocketWindowMs`).
+ * - `'dragging'`: Played later than the target pocket zone (`offsetMs > pocketCenterMs + pocketWindowMs`).
  */
 export type TimingVerdict = 'pocket' | 'rushing' | 'dragging';
 
@@ -19,9 +19,11 @@ export interface GradedPluckEntry {
   readonly beatLabel: string;
   /** Detected note name (`"E1"`) or `"Muted"` if percussive. */
   readonly noteLabel: string;
-  /** Signed timing error in milliseconds (`< 0` = early/rushing, `> 0` = late/dragging). */
+  /** Signed timing error in milliseconds relative to the grid beat (`< 0` = early, `> 0` = late). */
   readonly offsetMs: number;
-  /** `true` if `Math.abs(offsetMs) <= pocketWindowMs`. */
+  /** Signed timing error relative to the intentional pocket center (`offsetMs - pocketCenterMs`). */
+  readonly feelDeltaMs: number;
+  /** `true` if `Math.abs(offsetMs - pocketCenterMs) <= pocketWindowMs`. */
   readonly inPocket: boolean;
   /** Categorical timing verdict (`'pocket'`, `'rushing'`, or `'dragging'`). */
   readonly verdict: TimingVerdict;
@@ -37,9 +39,9 @@ export interface GradedPluckEntry {
 export interface SessionStats {
   /** Number of evaluated notes in the rolling window (up to 64). */
   readonly totalHits: number;
-  /** Percentage of evaluated notes inside `±pocketWindowMs` (`0..100`), or `null` if 0 hits. */
+  /** Percentage of evaluated notes inside `pocketCenterMs ± pocketWindowMs` (`0..100`), or `null` if 0 hits. */
   readonly inPocketPct: number | null;
-  /** Mean signed timing offset in ms (negative = rushing tendency, positive = dragging tendency). */
+  /** Mean signed timing offset in ms relative to 0ms grid center. */
   readonly meanOffsetMs: number | null;
   /** Timing jitter standard deviation ($\sigma$) in ms — the primary metric of groove consistency. */
   readonly stdDevMs: number | null;
@@ -58,7 +60,7 @@ const MAX_HISTORY_ENTRIES = 24;
  * and maintains session micro-timing statistics (in-pocket rate, mean tendency, and $\sigma$ jitter).
  *
  * Designed to be source-agnostic: any producer of `TargetNoteEvent`s (the built-in
- * metronome scheduler or a future song/YouTube beatmap loader) can feed `pushTargetEvent()`.
+ * metronome/pattern scheduler or a future song/YouTube beatmap loader) can feed `pushTargetEvent()`.
  */
 export class PocketGrader {
   private timelineEvents: TargetNoteEvent[] = [];
@@ -66,6 +68,11 @@ export class PocketGrader {
   private offsetsMs: number[] = [];
   private noteMatches = 0;
   private noteAttempts = 0;
+
+  // Speed Trainer bar-window tracking
+  private speedTrainerHitsInWindow = 0;
+  private speedTrainerPocketInWindow = 0;
+  private speedTrainerActiveBars = new Set<number>();
 
   /**
    * Appends a newly scheduled `TargetNoteEvent` to the rolling lookup window.
@@ -82,6 +89,16 @@ export class PocketGrader {
    */
   public clearTimeline(): void {
     this.timelineEvents = [];
+    this.resetSpeedTrainerWindow();
+  }
+
+  /**
+   * Resets the 4-bar Speed Trainer accumulation window.
+   */
+  public resetSpeedTrainerWindow(): void {
+    this.speedTrainerHitsInWindow = 0;
+    this.speedTrainerPocketInWindow = 0;
+    this.speedTrainerActiveBars.clear();
   }
 
   /**
@@ -92,6 +109,7 @@ export class PocketGrader {
     this.offsetsMs = [];
     this.noteMatches = 0;
     this.noteAttempts = 0;
+    this.resetSpeedTrainerWindow();
   }
 
   /**
@@ -133,7 +151,8 @@ export class PocketGrader {
 
   /**
    * Subtracts `latencyCompensationMs` from `pluck.rawOnsetTimeSec`, matches the pluck
-   * to the nearest `TargetNoteEvent`, and records the graded entry.
+   * to the nearest `TargetNoteEvent`, and records the graded entry relative to
+   * `pocketCenterMs ± pocketWindowMs`.
    *
    * @returns The `GradedPluckEntry`, or `null` if no timeline event is within half a grid step.
    */
@@ -144,12 +163,14 @@ export class PocketGrader {
       bpm: number;
       subdivision: Subdivision;
       pocketWindowMs: number;
+      pocketCenterMs?: number;
     },
   ): GradedPluckEntry | null {
     if (this.timelineEvents.length === 0) {
       return null;
     }
 
+    const pocketCenterMs = params.pocketCenterMs ?? 0;
     const compensatedTimeSec =
       pluck.rawOnsetTimeSec - params.latencyCompensationMs / 1000;
     const match = this.findNearestTarget(compensatedTimeSec, false);
@@ -158,16 +179,16 @@ export class PocketGrader {
     }
 
     const stepDurationMs = 60000 / params.bpm / params.subdivision;
-    if (Math.abs(match.offsetMs) > stepDurationMs * 0.52) {
+    if (Math.abs(match.offsetMs) > stepDurationMs * 0.56) {
       return null;
     }
 
     const offsetMs = match.offsetMs;
-    const absMs = Math.abs(offsetMs);
-    const inPocket = absMs <= params.pocketWindowMs;
+    const feelDeltaMs = offsetMs - pocketCenterMs;
+    const inPocket = Math.abs(feelDeltaMs) <= params.pocketWindowMs;
     const verdict: TimingVerdict = inPocket
       ? 'pocket'
-      : offsetMs < 0
+      : feelDeltaMs < 0
         ? 'rushing'
         : 'dragging';
 
@@ -188,11 +209,18 @@ export class PocketGrader {
       this.offsetsMs.shift();
     }
 
+    this.speedTrainerHitsInWindow++;
+    if (inPocket && noteMatched) {
+      this.speedTrainerPocketInWindow++;
+    }
+    this.speedTrainerActiveBars.add(match.target.barNumber);
+
     const entry: GradedPluckEntry = {
       targetEvent: match.target,
       beatLabel: match.target.beatLabel,
       noteLabel: pluck.pitch ? pluck.pitch.fullName : 'Muted',
       offsetMs,
+      feelDeltaMs,
       inPocket,
       verdict,
       noteMatched,
@@ -208,6 +236,27 @@ export class PocketGrader {
   }
 
   /**
+   * Checks whether the player has completed at least `targetBarCount` active bars
+   * with `>= minAccuracyRatio` (default 85%) in-pocket accuracy. If met, resets the
+   * Speed Trainer window and returns `true` so the caller can step up BPM.
+   */
+  public consumeSpeedTrainerStepUpIfReady(
+    targetBarCount = 4,
+    minAccuracyRatio = 0.85,
+  ): boolean {
+    if (this.speedTrainerActiveBars.size < targetBarCount) {
+      return false;
+    }
+    if (this.speedTrainerHitsInWindow < targetBarCount * 2) {
+      return false;
+    }
+    const ratio =
+      this.speedTrainerPocketInWindow / this.speedTrainerHitsInWindow;
+    this.resetSpeedTrainerWindow();
+    return ratio >= minAccuracyRatio;
+  }
+
+  /**
    * Returns the most recent graded plucks (up to 24, newest first).
    */
   public getHistory(): readonly GradedPluckEntry[] {
@@ -217,7 +266,7 @@ export class PocketGrader {
   /**
    * Computes aggregate session metrics over the rolling 64-pluck window.
    */
-  public getStats(pocketWindowMs: number): SessionStats {
+  public getStats(pocketWindowMs: number, pocketCenterMs = 0): SessionStats {
     const count = this.offsetsMs.length;
     if (count === 0) {
       return {
@@ -234,7 +283,7 @@ export class PocketGrader {
     let sum = 0;
     for (const v of this.offsetsMs) {
       sum += v;
-      if (Math.abs(v) <= pocketWindowMs) {
+      if (Math.abs(v - pocketCenterMs) <= pocketWindowMs) {
         pocketHits++;
       }
     }

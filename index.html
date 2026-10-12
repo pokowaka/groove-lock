@@ -142,11 +142,11 @@
       <!-- Left Column: Metronome & Micro-Timing Pocket Scope -->
       <section class="rack-module" aria-label="Rhythm and Pocket Analyzer">
         <div class="module-header">
-          <span class="module-title">01 // Micro-Timing &amp; Pocket Scope</span>
+          <span class="module-title">01 // Pocket Laboratory &amp; Micro-Timing Scope</span>
           <span class="field-value" id="active-grid-summary">90 BPM · Quarter Notes</span>
         </div>
 
-        <!-- Transport & Practice Drill Parameters -->
+        <!-- Row 1: Tempo, Groove Pattern, Subdivision, Sound Mode -->
         <div class="transport-row">
           <div class="control-field">
             <label class="field-label" for="bpm-input">
@@ -157,14 +157,63 @@
           </div>
 
           <div class="control-field">
+            <label class="field-label" for="groove-pattern-select">
+              <span>Groove Pattern</span>
+            </label>
+            <select id="groove-pattern-select">
+              <option value="uniform" selected>Uniform Grid (Subdivision)</option>
+              <option value="motown-pocket">Motown Pocket (1, 2-&amp;, 3, 4)</option>
+              <option value="funk-16th">Funk 16th Syncopation</option>
+              <option value="shuffle-swing">Swung 8th Shuffle (62%)</option>
+              <option value="octaves-8th">Driving 8th Pulse</option>
+            </select>
+          </div>
+
+          <div class="control-field">
             <label class="field-label" for="subdivision-select">
-              <span>Target Grid</span>
+              <span>Subdivision</span>
             </label>
             <select id="subdivision-select">
               <option value="1" selected>Quarter Notes (1 / beat)</option>
               <option value="2">Eighth Notes (2 / beat)</option>
               <option value="3">Triplets (3 / beat)</option>
               <option value="4">Sixteenth Notes (4 / beat)</option>
+            </select>
+          </div>
+
+          <div class="control-field">
+            <label class="field-label" for="sound-mode-select">
+              <span>Reference Sound</span>
+            </label>
+            <select id="sound-mode-select">
+              <option value="click" selected>Studio Click (Pitched)</option>
+              <option value="drums">Studio Drum Kit (Kick/Snare/Hat)</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Row 2: Click Placement, Pocket Feel, Pocket Tolerance, Gap Click, Speed Trainer -->
+        <div class="transport-row">
+          <div class="control-field">
+            <label class="field-label" for="click-placement-select">
+              <span>Click Placement</span>
+            </label>
+            <select id="click-placement-select">
+              <option value="all" selected>All 4 Beats</option>
+              <option value="backbeat-2-4">Backbeat Only (Beats 2 &amp; 4)</option>
+              <option value="one-drop-1">One-Drop (Beat 1 Only)</option>
+              <option value="offbeat-and">Off-Beat '&amp;' Only</option>
+            </select>
+          </div>
+
+          <div class="control-field">
+            <label class="field-label" for="pocket-feel-select">
+              <span>Pocket Feel Target</span>
+            </label>
+            <select id="pocket-feel-select">
+              <option value="0" selected>Dead Center (0 ms)</option>
+              <option value="12">Laid-Back / Behind (+12 ms)</option>
+              <option value="-8">Pushed / On Top (-8 ms)</option>
             </select>
           </div>
 
@@ -184,9 +233,20 @@
               <span>Gap Click Trainer</span>
             </label>
             <select id="gap-mode-select">
-              <option value="0" selected>Continuous Click (4/4)</option>
-              <option value="1">3 Bars Click + 1 Bar Silent</option>
-              <option value="2">2 Bars Click + 2 Bars Silent</option>
+              <option value="0" selected>Continuous (4/4)</option>
+              <option value="1">3 Bars + 1 Silent</option>
+              <option value="2">2 Bars + 2 Silent</option>
+            </select>
+          </div>
+
+          <div class="control-field">
+            <label class="field-label" for="speed-trainer-select">
+              <span>Speed Trainer</span>
+            </label>
+            <select id="speed-trainer-select">
+              <option value="0" selected>Off (Fixed Tempo)</option>
+              <option value="2">+2 BPM / 4 Clean Bars</option>
+              <option value="4">+4 BPM / 4 Clean Bars</option>
             </select>
           </div>
         </div>
@@ -197,6 +257,15 @@
           <div class="beat-lamp" id="beat-lamp-1">BEAT 2</div>
           <div class="beat-lamp" id="beat-lamp-2">BEAT 3</div>
           <div class="beat-lamp" id="beat-lamp-3">BEAT 4</div>
+        </div>
+
+        <!-- Bar Pattern Step Sequencer Indicator -->
+        <div class="pattern-strip-wrap">
+          <div class="field-label">
+            <span>Bar Target Pattern (Lit = Pluck · Dashed = Rest)</span>
+            <span class="field-value" id="pattern-step-count-label">4 Steps / Bar</span>
+          </div>
+          <div class="pattern-steps-grid" id="pattern-steps-strip"></div>
         </div>
 
         <!-- Micro-Timing Scope -->
@@ -212,13 +281,13 @@
           <div>
             <div class="pocket-ruler-wrap" id="pocket-ruler">
               <div class="pocket-zone-highlight" id="pocket-zone-box"></div>
-              <div class="pocket-center-line"></div>
+              <div class="pocket-center-line" id="pocket-center-marker"></div>
               <div class="hit-markers-layer" id="hit-markers-layer"></div>
             </div>
             <div class="ruler-scale-labels">
               <span>-60 ms (RUSHING)</span>
               <span>-30 ms</span>
-              <span>0 ms (DEAD LOCK)</span>
+              <span>0 ms (GRID)</span>
               <span>+30 ms</span>
               <span>+60 ms (DRAGGING)</span>
             </div>

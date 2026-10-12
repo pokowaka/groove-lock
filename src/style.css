@@ -366,6 +366,51 @@ input[type="range"] {
   border-style: dashed;
 }
 
+/* 16-Step Bar Pattern Indicator Strip */
+.pattern-strip-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pattern-steps-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(28px, 1fr));
+  gap: 5px;
+}
+
+.pattern-step-cell {
+  background-color: var(--bg-inset);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 5px 2px;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  transition: background-color 50ms ease, border-color 50ms ease, color 50ms ease;
+}
+
+.pattern-step-cell.target-active {
+  border-color: hsla(38, 92%, 56%, 0.55);
+  color: var(--text-primary);
+  background-color: hsla(38, 92%, 56%, 0.08);
+}
+
+.pattern-step-cell.target-rest {
+  opacity: 0.4;
+  border-style: dashed;
+  color: var(--text-muted);
+}
+
+.pattern-step-cell.playhead-current {
+  background-color: var(--accent-pocket-dim);
+  border-color: var(--accent-pocket);
+  color: var(--accent-pocket);
+  opacity: 1;
+}
+
 /* Pocket Micro-Timing Analyzer Display */
 .pocket-scope {
   background-color: var(--bg-inset);
