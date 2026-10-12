@@ -70,6 +70,37 @@ export interface AudioEngineCallbacks {
   ) => void;
   /** Called when an automated 6-ping hardware loopback calibration completes. */
   readonly onLoopbackComplete: (summary: LoopbackSummary) => void;
+  /**
+   * Called (ahead of time, at schedule time) whenever a count-in bar or a graded bar is scheduled,
+   * so real-time views can position a playhead against `getAudioClockSec()`.
+   */
+  readonly onBarScheduled?: (info: BarScheduleInfo) => void;
+  /** Called on each audible count-in beat (`0..3`), roughly when it is heard. */
+  readonly onCountInBeat?: (beatInBar: number) => void;
+  /** Called after the final graded bar of a round, its landing hit and a short grace period. */
+  readonly onRoundComplete?: () => void;
+}
+
+/**
+ * Timing and content of one scheduled bar, expressed on the `outputCtx` clock.
+ */
+export interface BarScheduleInfo {
+  /** `'count-in'` bars are never graded; `'play'` bars carry target steps. */
+  readonly kind: 'count-in' | 'play';
+  /** Zero-based graded bar number (`-1` for the count-in). */
+  readonly barNumber: number;
+  /** Bar start in `outputCtx.currentTime` seconds. */
+  readonly startTimeSec: number;
+  /** Bar duration in seconds at the tempo it was scheduled with. */
+  readonly durationSec: number;
+  /** Steps of the bar (empty for count-in bars). */
+  readonly steps: readonly PatternStepDescriptor[];
+  /** `true` if the Gap Click trainer mutes this bar. */
+  readonly isSilentGapBar: boolean;
+  /** `true` if the reference bass plays this bar. */
+  readonly isGuideBar: boolean;
+  /** Target pitch class for this bar. */
+  readonly expectedNote: TargetNoteEvent['expectedNote'];
 }
 
 /**
@@ -103,6 +134,13 @@ export class AudioEngine {
   private gapBars: GapClickMode = 0;
   private drillMode: DrillMode = 'free';
   private activeBarTargetNote: TargetNoteEvent['expectedNote'] = 'ANY';
+
+  /** Count-in bars played before bar 0 of each start (`0` disables). */
+  private countInBars = 1;
+  /** Graded bars per round; `0` runs continuously. */
+  private roundBars = 0;
+  private countInBeatsRemaining = 0;
+  private roundFinishTimerId: number | null = null;
 
   private channelMode: InputChannelMode = 'auto';
   private onsetThreshold = 0.035;
@@ -155,8 +193,23 @@ export class AudioEngine {
   }
 
   /**
+   * Returns the `outputCtx` time of the audio currently reaching the speakers (current time minus
+   * reported output latency), or `null` before the output context exists. Use it to draw
+   * playheads that line up with what the player hears.
+   */
+  public getAudioClockSec(): number | null {
+    if (!this.outputCtx) {
+      return null;
+    }
+    const latencySec =
+      this.outputCtx.outputLatency || this.outputCtx.baseLatency || 0;
+    return this.outputCtx.currentTime - latencySec;
+  }
+
+  /**
    * Updates metronome tempo, subdivision grid, groove pattern, sound engine, reference bass guide,
-   * click placement, pocket feel center, gap-click mode, or note exercise mode.
+   * click placement, pocket feel center, gap-click mode, note exercise mode, count-in or round length.
+   * Count-in and round length take effect on the next `startMetronome()`.
    */
   public setTransportConfig(config: {
     bpm?: number;
@@ -168,7 +221,15 @@ export class AudioEngine {
     pocketCenterMs?: PocketFeelOffsetMs;
     gapBars?: GapClickMode;
     drillMode?: DrillMode;
+    countInBars?: number;
+    roundBars?: number;
   }): void {
+    if (config.countInBars !== undefined) {
+      this.countInBars = Math.max(0, Math.floor(config.countInBars));
+    }
+    if (config.roundBars !== undefined) {
+      this.roundBars = Math.max(0, Math.floor(config.roundBars));
+    }
     if (config.bpm !== undefined) {
       this.bpm = config.bpm;
     }
@@ -493,6 +554,7 @@ export class AudioEngine {
     this.hasStartedFirstStep = false;
     this.nextNoteTimeSec = this.outputCtx.currentTime + 0.06;
     this.activeBarTargetNote = computeBarTarget(this.drillMode, 0).targetNote;
+    this.countInBeatsRemaining = this.countInBars * 4;
 
     this.schedulerTimerId = window.setInterval(() => {
       this.runMetronomeScheduler();
@@ -500,7 +562,7 @@ export class AudioEngine {
   }
 
   /**
-   * Stops the lookahead metronome scheduler.
+   * Stops the lookahead metronome scheduler (and cancels a pending round completion).
    */
   public stopMetronome(): void {
     this.isRunning = false;
@@ -508,10 +570,14 @@ export class AudioEngine {
       window.clearInterval(this.schedulerTimerId);
       this.schedulerTimerId = null;
     }
+    if (this.roundFinishTimerId !== null) {
+      window.clearTimeout(this.roundFinishTimerId);
+      this.roundFinishTimerId = null;
+    }
   }
 
   private runMetronomeScheduler(): void {
-    if (!this.outputCtx || !this.isRunning) {
+    if (!this.outputCtx || !this.isRunning || this.schedulerTimerId === null) {
       return;
     }
     const scheduleAheadSec = 0.1;
@@ -520,6 +586,11 @@ export class AudioEngine {
       this.nextNoteTimeSec <
       this.outputCtx.currentTime + scheduleAheadSec
     ) {
+      if (this.countInBeatsRemaining > 0) {
+        this.scheduleCountInBeat();
+        continue;
+      }
+
       const barSteps = resolvePatternBarSteps(
         this.groovePattern,
         this.subdivision,
@@ -529,6 +600,10 @@ export class AudioEngine {
       }
 
       if (this.currentStepInBar === 0 && this.hasStartedFirstStep) {
+        if (this.roundBars > 0 && this.currentBarNumber + 1 >= this.roundBars) {
+          this.finishRound(this.nextNoteTimeSec);
+          return;
+        }
         this.currentBarNumber++;
         this.activeBarTargetNote = computeBarTarget(
           this.drillMode,
@@ -542,6 +617,25 @@ export class AudioEngine {
         this.currentBarNumber,
         this.gapBars,
       );
+      const guideBassPlayingThisBar = isBassGuideActiveForBar(
+        this.currentBarNumber,
+        this.bassGuideMode,
+      );
+      const secondsPerBeat = 60.0 / this.bpm;
+
+      if (this.currentStepInBar === 0) {
+        const barBeats = barSteps.reduce((acc, s) => acc + s.durationBeats, 0);
+        this.callbacks.onBarScheduled?.({
+          kind: 'play',
+          barNumber: this.currentBarNumber,
+          startTimeSec: this.nextNoteTimeSec,
+          durationSec: barBeats * secondsPerBeat,
+          steps: barSteps,
+          isSilentGapBar,
+          isGuideBar: guideBassPlayingThisBar,
+          expectedNote: this.activeBarTargetNote,
+        });
+      }
 
       const targetEvent: TargetNoteEvent = {
         id: `${this.currentBarNumber}:${step.beatInBar}:${step.subIndex}`,
@@ -554,11 +648,6 @@ export class AudioEngine {
         isSilentGapBar,
       };
 
-      const guideBassPlayingThisBar = isBassGuideActiveForBar(
-        this.currentBarNumber,
-        this.bassGuideMode,
-      );
-
       this.scheduleStepAudioAndLamps(
         step,
         targetEvent,
@@ -569,10 +658,94 @@ export class AudioEngine {
         this.callbacks.onTargetScheduled(targetEvent);
       }
 
-      const secondsPerBeat = 60.0 / this.bpm;
       this.nextNoteTimeSec += secondsPerBeat * step.durationBeats;
       this.currentStepInBar = (this.currentStepInBar + 1) % barSteps.length;
     }
+  }
+
+  /**
+   * Schedules one quarter-note count-in click. Count-in clicks are always audible (independent of
+   * click placement and gap mode) and never produce target events.
+   */
+  private scheduleCountInBeat(): void {
+    if (!this.outputCtx) {
+      return;
+    }
+    const totalBeats = this.countInBars * 4;
+    const beatIndex = totalBeats - this.countInBeatsRemaining;
+    const beatInBar = beatIndex % 4;
+    const secondsPerBeat = 60.0 / this.bpm;
+    const timeSec = this.nextNoteTimeSec;
+
+    if (beatInBar === 0) {
+      this.callbacks.onBarScheduled?.({
+        kind: 'count-in',
+        barNumber: -1,
+        startTimeSec: timeSec,
+        durationSec: 4 * secondsPerBeat,
+        steps: [],
+        isSilentGapBar: false,
+        isGuideBar: false,
+        expectedNote: this.activeBarTargetNote,
+      });
+    }
+
+    this.drumSynth.scheduleClick(
+      this.outputCtx,
+      timeSec,
+      beatInBar === 0 ? 'downbeat' : 'quarter',
+    );
+    this.runAtAudioTime(timeSec, () => {
+      this.callbacks.onCountInBeat?.(beatInBar);
+    });
+
+    this.nextNoteTimeSec += secondsPerBeat;
+    this.countInBeatsRemaining--;
+  }
+
+  /**
+   * Ends a round: schedules a landing hit on the downbeat after the last graded bar, stops
+   * scheduling, and reports completion after a grace period so late final notes still grade.
+   * `isRunning` stays `true` until completion so plucks keep being evaluated.
+   */
+  private finishRound(landingTimeSec: number): void {
+    if (!this.outputCtx) {
+      return;
+    }
+    if (this.schedulerTimerId !== null) {
+      window.clearInterval(this.schedulerTimerId);
+      this.schedulerTimerId = null;
+    }
+
+    if (this.soundMode === 'drums') {
+      this.drumSynth.scheduleKick(this.outputCtx, landingTimeSec, 0.62);
+      this.drumSynth.scheduleHiHat(this.outputCtx, landingTimeSec, 0.2);
+    } else {
+      this.drumSynth.scheduleClick(this.outputCtx, landingTimeSec, 'downbeat');
+    }
+
+    const graceSec = Math.max(0.3, 0.5 * (60.0 / this.bpm));
+    const delayMs = Math.max(
+      0,
+      (landingTimeSec + graceSec - this.outputCtx.currentTime) * 1000,
+    );
+    this.roundFinishTimerId = window.setTimeout(() => {
+      this.roundFinishTimerId = null;
+      this.isRunning = false;
+      this.callbacks.onRoundComplete?.();
+    }, delayMs);
+  }
+
+  private runAtAudioTime(timeSec: number, fn: () => void): void {
+    if (!this.outputCtx) {
+      return;
+    }
+    const delayMs = Math.max(0, (timeSec - this.outputCtx.currentTime) * 1000);
+    window.setTimeout(() => {
+      if (this.isRunning) {
+        fn();
+      }
+    }, delayMs);
   }
 
   private scheduleClickOrDrumForStep(
