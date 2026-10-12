@@ -351,6 +351,20 @@ Free practice (today's mode) stays available. The Coach is a guide, not a gate.
     the listen/play structure, and a tip to pick Drums when the click is the only thing left under
     your bars. A real backing track is the "responsive band" (step 2).
 
+- **2026-10-11 — Coach C1 "Fix it" built** (`src/groove/drills.ts`, `tests/drills.test.ts`):
+  - After a normal round the results card shows **Coach suggests: <drill>** with a one-sentence
+    reason and a **[Fix it] (F)** button. Auto-continue still runs normal rounds if you ignore it.
+  - Drills: Steady Quarters, Lay It Back, On Top, Spot Fix (focus step outlined on the lane),
+    Ghost Drummer. Each drill is 5–7 levels; level 1 is slower and more tolerant than what you
+    just played. 4-bar drill rounds, reference bass and auto tempo off.
+  - Pass / neutral / fail per round; 2 passes → level up, 2 fails → level down. Results show the
+    level pips and "before → now" on the drill's focus metric.
+  - Drill strip above the lane (title, goal, level pips, level settings, **Exit drill (X)**).
+  - On completion: **Back to your groove** restores your settings and the next round compares
+    "Before <drill>: X% → now Y%". Your own settings are what gets saved during a drill.
+  - Not yet: drill levels persist across sessions (C3); Spot Fix only slows the full groove (true
+    rhythm isolation needs custom step masks, C5).
+
 ### Known gaps / next up
 
 - Step 1 polish after real-instrument testing: tune judgment thresholds, star rules, tip wording.
