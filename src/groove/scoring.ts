@@ -158,6 +158,8 @@ export interface RoundHit {
   readonly feelDeltaMs: number;
   readonly inPocket: boolean;
   readonly noteMatched: boolean;
+  /** `true` if the click was muted (Gap Click trainer) during this hit's bar. */
+  readonly inSilentBar?: boolean;
 }
 
 /** Per-step aggregate of feel deltas. */
