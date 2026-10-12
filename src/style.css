@@ -721,6 +721,94 @@ kbd {
   background-color: var(--bg-control);
 }
 
+/* ---------- Round playback ---------- */
+.playback {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.take-play {
+  flex-shrink: 0;
+  width: 44px;
+  height: 44px;
+  font-size: 16px;
+  background: var(--accent-amber);
+  border-color: hsl(38, 92%, 64%);
+  color: hsl(24, 15%, 8%);
+}
+
+.take-play:hover {
+  background: hsl(38, 95%, 62%);
+}
+
+.take-track {
+  position: relative;
+  flex: 1;
+  height: 44px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-inset);
+  border: 1px solid var(--border-subtle);
+  overflow: hidden;
+}
+
+.take-marks {
+  position: absolute;
+  inset: 0;
+}
+
+.take-bar {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.take-tick {
+  position: absolute;
+  top: 9px;
+  bottom: 9px;
+  width: 3px;
+  margin-left: -1.5px;
+  border-radius: 2px;
+}
+
+.take-tick[data-judgment='locked'] { background: var(--accent-locked); }
+.take-tick[data-judgment='pocket'] { background: var(--accent-pocket); }
+.take-tick[data-judgment='rushed'] { background: var(--accent-rush); }
+.take-tick[data-judgment='dragged'] { background: var(--accent-drag); }
+
+.take-head {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 2px;
+  background: var(--text-primary);
+  box-shadow: 0 0 8px rgba(255, 255, 255, 0.6);
+  display: none;
+}
+
+.take-head.is-playing {
+  display: block;
+}
+
+.take-mode {
+  flex-shrink: 0;
+}
+
+.take-mode button {
+  padding: 6px 10px;
+}
+
+.take-status {
+  margin-top: -8px;
+  font-size: 12px;
+  color: var(--text-muted);
+  min-height: 1.2em;
+}
+
 /* ---------- Coach & drills ---------- */
 .drill-strip {
   display: flex;

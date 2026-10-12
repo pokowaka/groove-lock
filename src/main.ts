@@ -1,5 +1,21 @@
 import './style.css';
-import { AudioEngine, type BarScheduleInfo } from './audio/audio-engine';
+import {
+  AudioEngine,
+  type BarScheduleInfo,
+  type RecordedPcmChunk,
+  type ScheduledSound,
+} from './audio/audio-engine';
+import {
+  assembleTrack,
+  mixTakeToWav,
+  normalizePeak,
+  type PlaybackMode,
+  renderSoundsOffline,
+  type Take,
+  type TakeTick,
+  TakePlayer,
+  toAudioBuffer,
+} from './audio/take';
 import { describeBassVoiceNote } from './dsp/pitch-utils';
 import type {
   DetectedPluckEvent,
@@ -227,6 +243,12 @@ function bootstrapGrooveLock(): void {
     drillPips: requireEl<HTMLSpanElement>('drill-pips'),
     drillLevel: requireEl<HTMLSpanElement>('drill-level'),
     drillExit: requireEl<HTMLButtonElement>('drill-exit'),
+    takePlay: requireEl<HTMLButtonElement>('take-play'),
+    takeMarks: requireEl<HTMLDivElement>('take-marks'),
+    takeHead: requireEl<HTMLDivElement>('take-head'),
+    takeMode: requireEl<HTMLDivElement>('take-mode'),
+    takeDownload: requireEl<HTMLButtonElement>('take-download'),
+    takeStatus: requireEl<HTMLParagraphElement>('take-status'),
     countdown: requireEl<HTMLDivElement>('countdown'),
     countdownFill: requireEl<HTMLDivElement>('countdown-fill'),
     countdownText: requireEl<HTMLSpanElement>('countdown-text'),
@@ -296,6 +318,32 @@ function bootstrapGrooveLock(): void {
   /** Set when returning to the groove after a drill, so the next round compares against before. */
   let transferBaseline: { readonly title: string; readonly summary: RoundSummary } | null = null;
 
+  // Round recording & playback
+  const MAX_TAKES = 5;
+  const TAKE_PRE_ROLL_BEATS = 1;
+  const TAKE_TAIL_SEC = 1.2;
+  /** Everything captured for one round; a new round never writes into an older session. */
+  interface RoundRecording {
+    readonly chunks: RecordedPcmChunk[];
+    readonly demoBass: ScheduledSound[];
+    readonly ticks: { timeSec: number; judgment: HitJudgment }[];
+    readonly barStartsSec: number[];
+    endSec: number;
+  }
+  /** The session collecting bars, ticks and sounds for the round in progress. */
+  let recording: RoundRecording | null = null;
+  /** The session receiving PCM; stays on a finished round until its final chunk has arrived. */
+  let pcmSink: RoundRecording | null = null;
+  let takes: Take[] = [];
+  let currentTake: Take | null = null;
+  let currentTakeBarsSec: number[] = [];
+  let playbackMode: PlaybackMode = 'mix';
+  /** Incremented whenever the results card is invalidated, so stale take builds are dropped. */
+  let resultsToken = 0;
+  /** `true` while the results card waits for playback to end before starting the countdown. */
+  let countdownAfterPlayback = false;
+  let takeAnimationId: number | null = null;
+
   let isCalibrating = false;
   let calibrationOffsetsMs: number[] = [];
   let isLoopbackPinging = false;
@@ -310,9 +358,13 @@ function bootstrapGrooveLock(): void {
     onBarScheduled: handleBarScheduled,
     onCountInBeat: handleCountInBeat,
     onRoundComplete: handleRoundComplete,
+    onPcmChunk: (chunk) => {
+      pcmSink?.chunks.push(chunk);
+    },
   });
 
   const lane = new TimelineLane(dom.timelineCanvas, () => engine.getAudioClockSec());
+  const takePlayer = new TakePlayer(() => engine.getOutputContext());
   const pocketMeter = new PocketMeter(dom.pocketCanvas);
 
   const demoPlayer = isDemo
@@ -428,6 +480,9 @@ function bootstrapGrooveLock(): void {
       case 'autoContinue':
         profile.autoContinue = raw === 'true';
         break;
+      case 'playbackAfterRound':
+        profile.playbackAfterRound = raw === 'true';
+        break;
       case 'visualGuide':
         profile.visualGuide = raw as VisualGuideMode;
         lane.setGuide(profile.visualGuide);
@@ -460,6 +515,7 @@ function bootstrapGrooveLock(): void {
       roundBars: String(profile.roundBars),
       autoContinue: String(profile.autoContinue),
       visualGuide: profile.visualGuide,
+      playbackAfterRound: String(profile.playbackAfterRound),
     };
     for (const [setting, value] of Object.entries(values)) {
       segmented.get(setting)?.set(value);
@@ -723,6 +779,8 @@ function bootstrapGrooveLock(): void {
 
   async function startPlaying(): Promise<void> {
     cancelCountdown();
+    stopTakePlayback();
+    resultsToken++;
     dom.results.hidden = true;
     if (!isDemo && !engine.isInputConnected()) {
       await connectAudioInterface(dom.deviceSelect.value || profile.selectedDeviceId);
@@ -732,6 +790,7 @@ function bootstrapGrooveLock(): void {
     isRoundActive = effectiveRoundBars() > 0;
     grader.clearTimeline();
     lane.clearBars();
+    beginRoundRecording();
     engine.setTransportConfig({ roundBars: effectiveRoundBars(), countInBars: 1 });
     engine.startMetronome();
     setPlayButton(true);
@@ -743,6 +802,9 @@ function bootstrapGrooveLock(): void {
   function stopPlaying(): void {
     engine.stopMetronome();
     isRoundActive = false;
+    discardRoundRecording();
+    stopTakePlayback();
+    resultsToken++;
     cancelCountdown();
     dom.results.hidden = true;
     lane.clearBars();
@@ -771,6 +833,9 @@ function bootstrapGrooveLock(): void {
       expectedTargetCount: roundExpectedTargets,
     });
     lastSummary = summary;
+    const token = ++resultsToken;
+    countdownAfterPlayback = recording !== null && profile.playbackAfterRound;
+    void finishRoundRecording(token);
 
     if (activeDrill) {
       completeDrillRound(activeDrill, summary);
@@ -832,7 +897,16 @@ function bootstrapGrooveLock(): void {
     dom.coachBox.hidden = false;
   }
 
+  function resetTakeUi(): void {
+    stopTakePlayback();
+    currentTake = null;
+    dom.takeMarks.replaceChildren();
+    dom.takeDownload.disabled = true;
+    dom.takeStatus.textContent = countdownAfterPlayback || profile.playbackAfterRound ? 'Preparing playback…' : '';
+  }
+
   function showResults(summary: RoundSummary, tempoMessage: string | null): void {
+    resetTakeUi();
     dom.resultsStars.replaceChildren();
     for (let i = 0; i < 3; i++) {
       const star = document.createElement('span');
@@ -853,7 +927,13 @@ function bootstrapGrooveLock(): void {
 
     dom.countdown.hidden = !profile.autoContinue;
     if (profile.autoContinue) {
-      startCountdown();
+      if (countdownAfterPlayback) {
+        cancelCountdown();
+        dom.countdownFill.style.transform = 'scaleX(1)';
+        dom.countdownText.textContent = 'Next round after playback';
+      } else {
+        startCountdown();
+      }
     }
   }
 
@@ -885,6 +965,9 @@ function bootstrapGrooveLock(): void {
 
   function stayAfterRound(): void {
     cancelCountdown();
+    stopTakePlayback();
+    countdownAfterPlayback = false;
+    resultsToken++;
     dom.results.hidden = true;
     const s = lastSummary;
     const stars = s ? '★'.repeat(s.stars) + '☆'.repeat(3 - s.stars) : '';
@@ -1090,6 +1173,196 @@ function bootstrapGrooveLock(): void {
 
   function handleBarScheduled(info: BarScheduleInfo): void {
     lane.pushBar(info, phaseOf(info));
+    if (recording && info.kind === 'play') {
+      recording.barStartsSec.push(info.startTimeSec);
+      recording.endSec = info.startTimeSec + info.durationSec;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Round recording & playback
+  // ---------------------------------------------------------------------------
+
+  function beginRoundRecording(): void {
+    if (effectiveRoundBars() === 0) {
+      recording = null;
+      return;
+    }
+    recording = { chunks: [], demoBass: [], ticks: [], barStartsSec: [], endSec: 0 };
+    pcmSink = recording;
+    engine.beginSoundLog();
+    engine.startRecording();
+  }
+
+  function discardRoundRecording(): void {
+    if (!recording) return;
+    recording = null;
+    pcmSink = null;
+    engine.takeSoundLog();
+    void engine.stopRecording();
+  }
+
+  /** Builds the take for the round that just ended, then plays it if the results are still up. */
+  async function finishRoundRecording(token: number): Promise<void> {
+    const rec = recording;
+    if (!rec) return;
+    recording = null;
+    const sounds = engine.takeSoundLog();
+    await engine.stopRecording();
+    if (pcmSink === rec) pcmSink = null;
+    const ctx = engine.getOutputContext();
+    const firstBar = rec.barStartsSec[0];
+    if (!ctx || firstBar === undefined) {
+      onTakeUnavailable(token, 'Nothing to play back.');
+      return;
+    }
+    const beatSec = 60 / profile.bpm;
+    const window = {
+      startSec: firstBar - TAKE_PRE_ROLL_BEATS * beatSec,
+      endSec: rec.endSec + TAKE_TAIL_SEC,
+    };
+    try {
+      const drums = await renderSoundsOffline(sounds, window, ctx.sampleRate);
+      let bass: AudioBuffer | null = null;
+      if (isDemo) {
+        bass = await renderSoundsOffline(rec.demoBass, window, ctx.sampleRate);
+      } else {
+        const track = assembleTrack(rec.chunks, {
+          ...window,
+          shiftSec: -profile.latencyCompensationMs / 1000,
+        });
+        if (track) {
+          normalizePeak(track.data, 0.8, 8);
+          bass = toAudioBuffer(track.data, track.sampleRate);
+        }
+      }
+      const ticks: TakeTick[] = rec.ticks.map((t) => ({
+        timeSec: t.timeSec - window.startSec,
+        judgment: t.judgment,
+      }));
+      const take: Take = { drums, bass, durationSec: window.endSec - window.startSec, ticks };
+      takes = [...takes, take].slice(-MAX_TAKES);
+      if (token !== resultsToken || dom.results.hidden) return;
+      currentTake = take;
+      currentTakeBarsSec = rec.barStartsSec.map((t) => t - window.startSec);
+      renderTakeTrack();
+      dom.takeDownload.disabled = false;
+      dom.takeStatus.textContent = bass
+        ? 'Your bass and the groove, exactly as graded. L replays.'
+        : 'No instrument recorded (connect audio in Setup). Drums only.';
+      segmentedTakeMode.setDisabled(bass === null);
+      if (profile.playbackAfterRound) {
+        playCurrentTake();
+      } else {
+        countdownAfterPlayback = false;
+      }
+    } catch {
+      onTakeUnavailable(token, 'Playback unavailable for this round.');
+    }
+  }
+
+  function onTakeUnavailable(token: number, message: string): void {
+    if (token !== resultsToken) return;
+    dom.takeStatus.textContent = message;
+    startCountdownIfWaiting();
+  }
+
+  function startCountdownIfWaiting(): void {
+    if (countdownAfterPlayback && !dom.results.hidden && profile.autoContinue) {
+      countdownAfterPlayback = false;
+      startCountdown();
+    }
+    countdownAfterPlayback = false;
+  }
+
+  function renderTakeTrack(): void {
+    dom.takeMarks.replaceChildren();
+    const take = currentTake;
+    if (!take) return;
+    const pct = (t: number): string => `${((t / take.durationSec) * 100).toFixed(2)}%`;
+    for (const barSec of currentTakeBarsSec) {
+      const bar = document.createElement('div');
+      bar.className = 'take-bar';
+      bar.style.left = pct(barSec);
+      dom.takeMarks.appendChild(bar);
+    }
+    for (const tick of take.ticks) {
+      const el = document.createElement('div');
+      el.className = 'take-tick';
+      el.dataset.judgment = tick.judgment;
+      el.style.left = pct(tick.timeSec);
+      dom.takeMarks.appendChild(el);
+    }
+  }
+
+  function playCurrentTake(): void {
+    const take = currentTake;
+    if (!take) return;
+    const started = takePlayer.play(take, playbackMode, () => {
+      stopTakeAnimation();
+      startCountdownIfWaiting();
+    });
+    if (!started) {
+      startCountdownIfWaiting();
+      return;
+    }
+    dom.takePlay.textContent = '■';
+    dom.takePlay.setAttribute('aria-label', 'Stop playback (L)');
+    dom.takeHead.classList.add('is-playing');
+    const frame = (): void => {
+      dom.takeHead.style.left = `${((takePlayer.positionSec() / take.durationSec) * 100).toFixed(2)}%`;
+      takeAnimationId = window.requestAnimationFrame(frame);
+    };
+    stopTakeAnimationFrame();
+    takeAnimationId = window.requestAnimationFrame(frame);
+  }
+
+  function stopTakeAnimationFrame(): void {
+    if (takeAnimationId !== null) {
+      window.cancelAnimationFrame(takeAnimationId);
+      takeAnimationId = null;
+    }
+  }
+
+  function stopTakeAnimation(): void {
+    stopTakeAnimationFrame();
+    dom.takePlay.textContent = '▶';
+    dom.takePlay.setAttribute('aria-label', 'Replay (L)');
+    dom.takeHead.classList.remove('is-playing');
+  }
+
+  function stopTakePlayback(): void {
+    takePlayer.stop();
+    stopTakeAnimation();
+  }
+
+  /** Replay button / L: stop if playing (and let the countdown run), otherwise replay. */
+  function toggleTakePlayback(): void {
+    if (takePlayer.isPlaying()) {
+      stopTakePlayback();
+      startCountdownIfWaiting();
+      return;
+    }
+    if (countdownTimerId !== null) {
+      cancelCountdown();
+      countdownAfterPlayback = profile.autoContinue;
+      dom.countdownFill.style.transform = 'scaleX(1)';
+      dom.countdownText.textContent = 'Next round after playback';
+    }
+    playCurrentTake();
+  }
+
+  async function downloadCurrentTake(): Promise<void> {
+    const take = currentTake;
+    if (!take) return;
+    const blob = await mixTakeToWav(take);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    a.href = url;
+    a.download = `groovelock-${stamp}.wav`;
+    a.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 5000);
   }
 
   function handleCountInBeat(beatInBar: number): void {
@@ -1150,6 +1423,15 @@ function bootstrapGrooveLock(): void {
     });
     if (graded) {
       handleGradedHit(graded);
+      if (isDemo && recording) {
+        recording.demoBass.push({
+          kind: 'bass',
+          timeSec: graded.targetEvent.timeSec + graded.offsetMs / 1000,
+          freqHz: pluck.pitch?.freqHz ?? 41.2,
+          gateSec: 0.22,
+          level: 0.5,
+        });
+      }
     }
   }
 
@@ -1222,6 +1504,7 @@ function bootstrapGrooveLock(): void {
         noteMatched: entry.noteMatched,
         inSilentBar: t.isSilentGapBar,
       });
+      recording?.ticks.push({ timeSec: t.timeSec + entry.offsetMs / 1000, judgment });
     }
 
     renderGrooveMeter();
@@ -1373,6 +1656,13 @@ function bootstrapGrooveLock(): void {
   dom.resNext.addEventListener('click', continueAfterResults);
   dom.resFix.addEventListener('click', startRecommendedDrill);
   dom.drillExit.addEventListener('click', () => exitDrill(false));
+  dom.takePlay.addEventListener('click', toggleTakePlayback);
+  dom.takeDownload.addEventListener('click', () => void downloadCurrentTake());
+  const segmentedTakeMode = bindSegmented(dom.takeMode, (value) => {
+    playbackMode = value as PlaybackMode;
+    takePlayer.setMode(playbackMode);
+  });
+  segmentedTakeMode.set(playbackMode);
   dom.resStay.addEventListener('click', stayAfterRound);
 
   dom.bassLineBtn.addEventListener('click', () => {
@@ -1471,6 +1761,12 @@ function bootstrapGrooveLock(): void {
         if (!dom.results.hidden && pendingRecommendation && !activeDrill) {
           e.preventDefault();
           startRecommendedDrill();
+        }
+        break;
+      case 'KeyL':
+        if (!dom.results.hidden && currentTake) {
+          e.preventDefault();
+          toggleTakePlayback();
         }
         break;
       case 'KeyX':

@@ -53,6 +53,8 @@ export interface GrooveLockProfile {
   autoContinue: boolean;
   /** Visual timing help on the timeline lane (`'none'`, `'glow'`, or `'sweep'`). */
   visualGuide: VisualGuideMode;
+  /** When `true`, each recorded round plays back automatically on the results card. */
+  playbackAfterRound: boolean;
 }
 
 /**
@@ -92,6 +94,7 @@ export const DEFAULT_PROFILE: GrooveLockProfile = {
   roundBars: 8,
   autoContinue: true,
   visualGuide: 'glow',
+  playbackAfterRound: true,
 };
 
 /**
@@ -224,6 +227,10 @@ export function loadProfile(): GrooveLockProfile {
         parsed.visualGuide === 'sweep'
           ? parsed.visualGuide
           : DEFAULT_PROFILE.visualGuide,
+      playbackAfterRound:
+        typeof parsed.playbackAfterRound === 'boolean'
+          ? parsed.playbackAfterRound
+          : DEFAULT_PROFILE.playbackAfterRound,
     };
   } catch {
     return { ...DEFAULT_PROFILE };

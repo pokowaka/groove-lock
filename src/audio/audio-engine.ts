@@ -194,6 +194,11 @@ export class AudioEngine {
         : null;
   }
 
+  /** The output context (click track, drums, playback), or `null` before first use. */
+  public getOutputContext(): AudioContext | null {
+    return this.outputCtx;
+  }
+
   /**
    * Returns `true` if the USB audio input stream and capture worklet are actively connected.
    */

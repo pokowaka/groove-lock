@@ -138,6 +138,7 @@
       <span><kbd>S</kbd> setup</span>
       <span><kbd>R</kbd> reset</span>
       <span><kbd>F</kbd> fix it</span>
+      <span><kbd>L</kbd> replay</span>
     </footer>
   </div>
 
@@ -148,6 +149,20 @@
         <h2 id="results-title">Round complete</h2>
         <div class="stars" id="results-stars" aria-label="Stars"></div>
       </div>
+      <div class="playback" id="playback">
+        <button type="button" class="icon-btn take-play" id="take-play" aria-label="Replay (L)" aria-keyshortcuts="L">▶</button>
+        <div class="take-track" id="take-track" aria-hidden="true">
+          <div class="take-marks" id="take-marks"></div>
+          <div class="take-head" id="take-head"></div>
+        </div>
+        <div class="segmented take-mode" id="take-mode" role="radiogroup" aria-label="Playback mix">
+          <button type="button" data-value="mix">Mix</button>
+          <button type="button" data-value="bass">Bass</button>
+          <button type="button" data-value="drums">Drums</button>
+        </div>
+        <button type="button" class="chip-btn" id="take-download" title="Download this take as WAV" disabled>WAV</button>
+      </div>
+      <p class="take-status" id="take-status">Preparing playback…</p>
       <div class="results-metrics">
         <div><span class="metric-label">In pocket</span><span class="metric-value" id="res-pocket">—</span></div>
         <div><span class="metric-label">Spread <span class="sigma">σ</span></span><span class="metric-value" id="res-sigma">—</span></div>
@@ -318,6 +333,14 @@
             <button type="button" data-value="16">16 bars</button>
             <button type="button" data-value="0">Endless</button>
           </div>
+        </div>
+        <div class="field">
+          <span class="field-label">Play back each round</span>
+          <div class="segmented" data-setting="playbackAfterRound" role="radiogroup" aria-label="Play back each round">
+            <button type="button" data-value="true">On</button>
+            <button type="button" data-value="false">Off</button>
+          </div>
+          <span class="field-help">Every round is recorded. Press L on the results to replay.</span>
         </div>
         <div class="field">
           <span class="field-label">Start next round automatically</span>
