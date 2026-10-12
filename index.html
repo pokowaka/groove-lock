@@ -46,6 +46,15 @@
 
     <!-- Timeline lane -->
     <section class="lane-panel" aria-label="Timeline">
+      <div class="drill-strip" id="drill-strip" hidden>
+        <span class="drill-badge">Drill</span>
+        <span class="drill-title" id="drill-title"></span>
+        <span class="drill-goal" id="drill-goal"></span>
+        <span class="lane-spacer"></span>
+        <span class="level-pips" id="drill-pips" aria-hidden="true"></span>
+        <span class="drill-level" id="drill-level"></span>
+        <button type="button" class="chip-btn" id="drill-exit" aria-keyshortcuts="X">Exit drill <kbd>X</kbd></button>
+      </div>
       <div class="lane-header">
         <span class="phase-tag" id="phase-tag">Ready</span>
         <span class="lane-bar" id="bar-counter">8-bar rounds</span>
@@ -128,6 +137,7 @@
       <span><kbd>E</kbd> exercise</span>
       <span><kbd>S</kbd> setup</span>
       <span><kbd>R</kbd> reset</span>
+      <span><kbd>F</kbd> fix it</span>
     </footer>
   </div>
 
@@ -145,9 +155,18 @@
         <div><span class="metric-label">Best streak</span><span class="metric-value" id="res-streak">—</span></div>
       </div>
       <p class="results-tip" id="res-tip"></p>
+      <div class="coach-box" id="coach-box" hidden>
+        <div class="coach-head">
+          <span class="coach-label" id="coach-label">Coach</span>
+          <span class="level-pips" id="coach-pips" aria-hidden="true"></span>
+        </div>
+        <p class="coach-text" id="coach-text"></p>
+        <p class="coach-compare" id="coach-compare" hidden></p>
+      </div>
       <p class="results-tempo" id="res-tempo" hidden></p>
       <div class="results-actions">
-        <button type="button" class="btn btn-primary" id="res-next">Next round <kbd>Enter</kbd></button>
+        <button type="button" class="btn btn-coach" id="res-fix" aria-keyshortcuts="F" hidden>Fix it <kbd>F</kbd></button>
+        <button type="button" class="btn btn-primary" id="res-next"><span id="res-next-label">Next round</span> <kbd>Enter</kbd></button>
         <button type="button" class="btn" id="res-stay">Stay here <kbd>Esc</kbd></button>
       </div>
       <div class="countdown" id="countdown">

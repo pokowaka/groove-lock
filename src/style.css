@@ -721,6 +721,120 @@ kbd {
   background-color: var(--bg-control);
 }
 
+/* ---------- Coach & drills ---------- */
+.drill-strip {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid hsla(152, 62%, 45%, 0.5);
+  background: var(--accent-pocket-dim);
+}
+
+.drill-badge {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: var(--accent-pocket);
+  color: hsl(152, 40%, 7%);
+}
+
+.drill-title {
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.drill-goal {
+  color: var(--text-secondary);
+  font-size: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.drill-level {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+.level-pips {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.level-pips .pip {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--bg-control);
+  border: 1px solid var(--border-bevel);
+}
+
+.level-pips .pip.done {
+  background: var(--accent-pocket);
+  border-color: var(--accent-pocket);
+}
+
+.level-pips .pip.current {
+  background: var(--accent-amber);
+  border-color: var(--accent-amber);
+  box-shadow: 0 0 8px hsla(38, 92%, 56%, 0.6);
+}
+
+.coach-box {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border-left: 3px solid var(--accent-pocket);
+  background: var(--accent-pocket-dim);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+
+.coach-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.coach-label {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--accent-locked);
+}
+
+.coach-text {
+  font-size: 17px;
+  line-height: 1.45;
+}
+
+.coach-compare {
+  font-family: var(--font-mono);
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.btn-coach {
+  background-color: var(--accent-pocket);
+  border-color: hsl(152, 65%, 55%);
+  color: hsl(152, 40%, 7%);
+}
+
+.btn-coach:hover {
+  background-color: hsl(152, 70%, 50%);
+}
+
 /* ---------- Results card ---------- */
 .results-backdrop {
   position: fixed;
@@ -734,7 +848,7 @@ kbd {
 }
 
 .results-card {
-  width: min(560px, calc(100vw - 32px));
+  width: min(640px, calc(100vw - 32px));
   background: linear-gradient(180deg, hsl(24, 7%, 15%), var(--bg-panel));
   border: 1px solid var(--border-bevel);
   border-radius: 18px;

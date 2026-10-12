@@ -52,6 +52,7 @@ export class TimelineLane {
   private bars: LaneBar[] = [];
   private pocketWindowMs = 16;
   private guide: VisualGuideMode = 'glow';
+  private focusStepIndex: number | null = null;
   private rafId: number | null = null;
 
   constructor(canvas: HTMLCanvasElement, readClock: () => number | null) {
@@ -101,6 +102,11 @@ export class TimelineLane {
 
   public setGuide(guide: VisualGuideMode): void {
     this.guide = guide;
+  }
+
+  /** Marks one step as the drill's focus (outlined and tagged), or clears it with `null`. */
+  public setFocusStep(stepIndex: number | null): void {
+    this.focusStepIndex = stepIndex;
   }
 
   /** Queues a scheduled bar; the lane shows whichever bar is currently sounding. */
@@ -280,6 +286,20 @@ export class TimelineLane {
     ctx.strokeStyle = stroke;
     ctx.lineWidth = 1.5;
     ctx.stroke();
+
+    if (idx === this.focusStepIndex) {
+      ctx.setLineDash([6, 4]);
+      ctx.strokeStyle = PALETTE.textPrimary;
+      ctx.lineWidth = 2;
+      roundRectPath(ctx, bx - 2, top - 2, bw + 4, height + 4, 10);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.font = `700 11px ${FONTS.sans}`;
+      ctx.fillStyle = PALETTE.textPrimary;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      ctx.fillText('FOCUS', bx + bw / 2, top + 8);
+    }
 
     const label = this.noteLabels[idx] ?? '';
     const cx = bx + bw / 2;

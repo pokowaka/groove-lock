@@ -19,6 +19,21 @@ import {
   type SoundEngineMode,
   type SpeedTrainerStep,
 } from './groove/patterns';
+import {
+  advanceStaircase,
+  buildDrillPlan,
+  type DrillPlan,
+  type DrillRecommendation,
+  type DrillSettings,
+  type DrillVerdict,
+  type FocusMeasurement,
+  judgeDrillRound,
+  measureFocus,
+  recommendDrill,
+  type StaircaseEvent,
+  type StaircaseState,
+  startStaircase,
+} from './groove/drills';
 import { type GradedPluckEntry, PocketGrader } from './groove/pocket-grader';
 import {
   computeGrooveMeter,
@@ -198,6 +213,20 @@ function bootstrapGrooveLock(): void {
     resTempo: requireEl<HTMLParagraphElement>('res-tempo'),
     resNext: requireEl<HTMLButtonElement>('res-next'),
     resStay: requireEl<HTMLButtonElement>('res-stay'),
+    resFix: requireEl<HTMLButtonElement>('res-fix'),
+    resNextLabel: requireEl<HTMLSpanElement>('res-next-label'),
+    resultsTitle: requireEl<HTMLHeadingElement>('results-title'),
+    coachBox: requireEl<HTMLDivElement>('coach-box'),
+    coachLabel: requireEl<HTMLSpanElement>('coach-label'),
+    coachPips: requireEl<HTMLSpanElement>('coach-pips'),
+    coachText: requireEl<HTMLParagraphElement>('coach-text'),
+    coachCompare: requireEl<HTMLParagraphElement>('coach-compare'),
+    drillStrip: requireEl<HTMLDivElement>('drill-strip'),
+    drillTitle: requireEl<HTMLSpanElement>('drill-title'),
+    drillGoal: requireEl<HTMLSpanElement>('drill-goal'),
+    drillPips: requireEl<HTMLSpanElement>('drill-pips'),
+    drillLevel: requireEl<HTMLSpanElement>('drill-level'),
+    drillExit: requireEl<HTMLButtonElement>('drill-exit'),
     countdown: requireEl<HTMLDivElement>('countdown'),
     countdownFill: requireEl<HTMLDivElement>('countdown-fill'),
     countdownText: requireEl<HTMLSpanElement>('countdown-text'),
@@ -249,6 +278,24 @@ function bootstrapGrooveLock(): void {
   let countdownTimerId: number | null = null;
   let tapTimesMs: number[] = [];
 
+  /** A drill in progress; practice settings are swapped for the drill's and restored on exit. */
+  interface ActiveDrill {
+    readonly plan: DrillPlan;
+    staircase: StaircaseState;
+    readonly savedSettings: DrillSettings;
+    readonly baselineSummary: RoundSummary;
+    readonly baselineFocus: FocusMeasurement;
+    isComplete: boolean;
+  }
+  let activeDrill: ActiveDrill | null = null;
+  let pendingRecommendation: {
+    readonly rec: DrillRecommendation;
+    readonly summary: RoundSummary;
+    readonly hits: readonly RoundHit[];
+  } | null = null;
+  /** Set when returning to the groove after a drill, so the next round compares against before. */
+  let transferBaseline: { readonly title: string; readonly summary: RoundSummary } | null = null;
+
   let isCalibrating = false;
   let calibrationOffsetsMs: number[] = [];
   let isLoopbackPinging = false;
@@ -281,8 +328,9 @@ function bootstrapGrooveLock(): void {
   // Settings
   // ---------------------------------------------------------------------------
 
+  /** Saves the profile; during a drill the player's own practice settings are saved instead. */
   function persist(): void {
-    saveProfile(profile);
+    saveProfile(activeDrill ? { ...profile, ...activeDrill.savedSettings } : profile);
   }
 
   function effectiveRoundBars(): number {
@@ -419,7 +467,9 @@ function bootstrapGrooveLock(): void {
   }
 
   function updateExerciseSummary(): void {
-    const summary = formatExerciseSummary(profile);
+    const summary = activeDrill
+      ? `Drill · ${activeDrill.plan.title} · Level ${activeDrill.staircase.level + 1}/${activeDrill.plan.levels.length}`
+      : formatExerciseSummary(profile);
     dom.exerciseSummary.textContent = summary;
     dom.exerciseChip.title = summary;
   }
@@ -706,7 +756,7 @@ function bootstrapGrooveLock(): void {
     if (engine.isMetronomeRunning()) {
       stopPlaying();
     } else {
-      void startPlaying();
+      continueAfterResults();
     }
   }
 
@@ -722,12 +772,64 @@ function bootstrapGrooveLock(): void {
     });
     lastSummary = summary;
 
+    if (activeDrill) {
+      completeDrillRound(activeDrill, summary);
+      return;
+    }
+
+    const rec = recommendDrill(summary, roundHits, {
+      pocketWindowMs: profile.pocketWindowMs,
+      expectedTargetCount: roundExpectedTargets,
+    });
+    pendingRecommendation = rec ? { rec, summary, hits: [...roundHits] } : null;
+
+    let compare: string | null = null;
+    if (transferBaseline) {
+      const before = transferBaseline.summary;
+      compare = `Before ${transferBaseline.title}: ${before.inPocketPct}% in pocket → now ${summary.inPocketPct}%`;
+      transferBaseline = null;
+    }
+
     let tempoMessage: string | null = null;
     if (summary.stars === 3 && profile.speedTrainerStep > 0 && profile.bpm < MAX_BPM) {
       setBpm(profile.bpm + profile.speedTrainerStep);
       tempoMessage = `Tempo up → ${profile.bpm} BPM next round`;
     }
+
+    dom.resultsTitle.textContent = compare ? 'Back in the groove' : 'Round complete';
+    dom.resFix.hidden = rec === null;
+    dom.resNextLabel.textContent = 'Next round';
+    if (rec) {
+      const title = buildDrillPlan(rec.drillId, currentDrillSettings(), rec.focusStep).title;
+      dom.resFix.replaceChildren(`Fix it: ${title} `, kbd('F'));
+      showCoachBox(`Coach suggests: ${title}`, rec.reason, compare, null);
+    } else if (compare) {
+      showCoachBox('Coach', 'Nice work in the drill.', compare, null);
+    } else {
+      dom.coachBox.hidden = true;
+    }
+    dom.resTip.hidden = !dom.coachBox.hidden;
     showResults(summary, tempoMessage);
+  }
+
+  function kbd(text: string): HTMLElement {
+    const el = document.createElement('kbd');
+    el.textContent = text;
+    return el;
+  }
+
+  function showCoachBox(
+    label: string,
+    text: string,
+    compare: string | null,
+    drill: ActiveDrill | null,
+  ): void {
+    dom.coachLabel.textContent = label;
+    dom.coachText.textContent = text;
+    dom.coachCompare.hidden = compare === null;
+    dom.coachCompare.textContent = compare ?? '';
+    renderPips(dom.coachPips, drill);
+    dom.coachBox.hidden = false;
   }
 
   function showResults(summary: RoundSummary, tempoMessage: string | null): void {
@@ -762,10 +864,12 @@ function bootstrapGrooveLock(): void {
       const elapsedSec = (performance.now() - startMs) / 1000;
       const remaining = Math.max(0, AUTO_CONTINUE_SEC - elapsedSec);
       dom.countdownFill.style.transform = `scaleX(${(remaining / AUTO_CONTINUE_SEC).toFixed(3)})`;
-      dom.countdownText.textContent = `Next round in ${Math.ceil(remaining)} s`;
+      dom.countdownText.textContent = activeDrill?.isComplete
+        ? `Back to your groove in ${Math.ceil(remaining)} s`
+        : `Next round in ${Math.ceil(remaining)} s`;
       if (remaining <= 0) {
         cancelCountdown();
-        void startPlaying();
+        continueAfterResults();
       }
     };
     tick();
@@ -790,6 +894,198 @@ function bootstrapGrooveLock(): void {
     );
     setPhaseTag('ready');
     setBarCounterIdle();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Coach: drills
+  // ---------------------------------------------------------------------------
+
+  function currentDrillSettings(): DrillSettings {
+    return {
+      bpm: profile.bpm,
+      groovePattern: profile.groovePattern,
+      subdivision: profile.subdivision,
+      clickPlacement: profile.clickPlacement,
+      gapBars: profile.gapBars,
+      pocketCenterMs: profile.pocketCenterMs,
+      pocketWindowMs: profile.pocketWindowMs,
+      soundMode: profile.soundMode,
+      bassGuideMode: profile.bassGuideMode,
+      roundBars: profile.roundBars,
+      drillMode: profile.drillMode,
+      speedTrainerStep: profile.speedTrainerStep,
+    };
+  }
+
+  /** Applies a full set of practice settings to the profile, engine and every control. */
+  function applyPracticeSettings(settings: DrillSettings): void {
+    Object.assign(profile, settings);
+    dom.bpmValue.textContent = String(profile.bpm);
+    dom.groovePatternSelect.value = profile.groovePattern;
+    dom.drillModeSelect.value = profile.drillMode;
+    grader.clearTimeline();
+    engine.setTransportConfig({
+      bpm: profile.bpm,
+      subdivision: profile.subdivision,
+      groovePattern: profile.groovePattern,
+      soundMode: profile.soundMode,
+      bassGuideMode: profile.bassGuideMode,
+      clickPlacement: profile.clickPlacement,
+      pocketCenterMs: profile.pocketCenterMs,
+      gapBars: profile.gapBars,
+      drillMode: profile.drillMode,
+      roundBars: effectiveRoundBars(),
+    });
+    syncSegmentedFromProfile();
+    syncBassLineButton();
+    rebuildLane();
+    applyPocketSettings();
+    updateTargetDisplay(0);
+    updateExerciseSummary();
+    updateBassGuideHelp();
+    setBarCounterIdle();
+    persist();
+  }
+
+  function renderPips(container: HTMLElement, drill: ActiveDrill | null): void {
+    container.replaceChildren();
+    if (!drill) return;
+    drill.plan.levels.forEach((_, i) => {
+      const pip = document.createElement('span');
+      pip.className =
+        i < drill.staircase.level || (drill.isComplete && i === drill.staircase.level)
+          ? 'pip done'
+          : i === drill.staircase.level
+            ? 'pip current'
+            : 'pip';
+      container.appendChild(pip);
+    });
+  }
+
+  function updateDrillStrip(): void {
+    const drill = activeDrill;
+    dom.drillStrip.hidden = drill === null;
+    if (!drill) {
+      lane.setFocusStep(null);
+      return;
+    }
+    const level = drill.plan.levels[drill.staircase.level];
+    dom.drillTitle.textContent = drill.plan.title;
+    dom.drillGoal.textContent = drill.plan.goal;
+    dom.drillGoal.title = drill.plan.goal;
+    dom.drillLevel.textContent = `Level ${drill.staircase.level + 1}/${drill.plan.levels.length} · ${level.label}`;
+    renderPips(dom.drillPips, drill);
+    const focusKey = drill.plan.focusStep?.key;
+    const idx = focusKey
+      ? laneSteps.findIndex((s) => stepKeyOf(s.beatInBar, s.subIndex) === focusKey)
+      : -1;
+    lane.setFocusStep(idx >= 0 ? idx : null);
+  }
+
+  function formatFocus(m: FocusMeasurement): string {
+    if (m.value === null) return '—';
+    if (m.unit === '%') return `${m.value}%`;
+    return /spread/i.test(m.label) ? `${m.value.toFixed(1)} ms` : formatSignedMs(m.value);
+  }
+
+  /** Starts the Coach's recommended drill from the results card. */
+  function startRecommendedDrill(): void {
+    const pending = pendingRecommendation;
+    if (!pending || activeDrill) return;
+    const saved = currentDrillSettings();
+    const plan = buildDrillPlan(pending.rec.drillId, saved, pending.rec.focusStep);
+    activeDrill = {
+      plan,
+      staircase: startStaircase(0),
+      savedSettings: saved,
+      baselineSummary: pending.summary,
+      baselineFocus: measureFocus(plan, pending.hits),
+      isComplete: false,
+    };
+    pendingRecommendation = null;
+    applyPracticeSettings(plan.levels[0].settings);
+    updateDrillStrip();
+    void startPlaying();
+  }
+
+  /**
+   * Leaves the drill and restores the player's own settings.
+   *
+   * @param transfer When `true`, the next round is compared against the round before the drill.
+   */
+  function exitDrill(transfer: boolean): void {
+    const drill = activeDrill;
+    if (!drill) return;
+    if (engine.isMetronomeRunning()) {
+      stopPlaying();
+    }
+    activeDrill = null;
+    transferBaseline = transfer ? { title: drill.plan.title, summary: drill.baselineSummary } : null;
+    applyPracticeSettings(drill.savedSettings);
+    updateDrillStrip();
+    if (!transfer && !dom.results.hidden) {
+      cancelCountdown();
+      dom.results.hidden = true;
+      showOverlay('Drill ended — press Space to play', 'Your own settings are back.');
+    }
+  }
+
+  const VERDICT_TITLES: Readonly<Record<DrillVerdict, string>> = {
+    pass: 'Passed ✓ One more to level up',
+    neutral: 'Almost. Keep going',
+    fail: 'Tough one. Try again',
+  };
+
+  function completeDrillRound(drill: ActiveDrill, summary: RoundSummary): void {
+    const verdict = judgeDrillRound(summary, roundHits, {
+      pocketWindowMs: profile.pocketWindowMs,
+      focusStepKey: drill.plan.focusStep?.key ?? null,
+    });
+    const { state, event } = advanceStaircase(drill.staircase, verdict, drill.plan.levels.length);
+    drill.staircase = state;
+    drill.isComplete = event === 'complete';
+    if (event === 'level-up' || event === 'level-down') {
+      applyPracticeSettings(drill.plan.levels[state.level].settings);
+    }
+    updateDrillStrip();
+    updateExerciseSummary();
+
+    const titles: Record<StaircaseEvent, string> = {
+      hold: VERDICT_TITLES[verdict],
+      'level-up': `Level up! → Level ${state.level + 1}`,
+      'level-down': "Let's step back a level",
+      complete: 'Drill complete! 🎉',
+    };
+    dom.resultsTitle.textContent = titles[event];
+
+    const now = measureFocus(drill.plan, roundHits);
+    const compare = `${now.label}: ${formatFocus(drill.baselineFocus)} → ${formatFocus(now)}`;
+    const nextLevel = drill.plan.levels[state.level];
+    const text = drill.isComplete
+      ? 'You beat every level. Now play your own groove again and see the difference.'
+      : event === 'level-down'
+        ? `Back to ${nextLevel.label}. Get comfortable here first.`
+        : event === 'level-up'
+          ? `Next: ${nextLevel.label}.`
+          : `Still on ${nextLevel.label}. ${drill.plan.goal}`;
+    showCoachBox(
+      `${drill.plan.title} · Level ${state.level + 1}/${drill.plan.levels.length}`,
+      text,
+      compare,
+      drill,
+    );
+    dom.resTip.hidden = true;
+    dom.resFix.hidden = true;
+    dom.resNextLabel.textContent = drill.isComplete ? 'Back to your groove' : 'Next round';
+    showResults(summary, null);
+  }
+
+  /** What Enter / Space / the countdown do from the results card. */
+  function continueAfterResults(): void {
+    if (activeDrill?.isComplete) {
+      exitDrill(true);
+    }
+    void startPlaying();
   }
 
   function handleBarScheduled(info: BarScheduleInfo): void {
@@ -924,6 +1220,7 @@ function bootstrapGrooveLock(): void {
         feelDeltaMs: entry.feelDeltaMs,
         inPocket: entry.inPocket,
         noteMatched: entry.noteMatched,
+        inSilentBar: t.isSilentGapBar,
       });
     }
 
@@ -1073,7 +1370,9 @@ function bootstrapGrooveLock(): void {
   dom.tapBtn.addEventListener('click', handleTap);
   dom.exerciseChip.addEventListener('click', () => drawers.toggle(dom.exerciseDrawer, dom.exerciseChip));
   dom.setupChip.addEventListener('click', () => drawers.toggle(dom.setupDrawer, dom.setupChip));
-  dom.resNext.addEventListener('click', () => void startPlaying());
+  dom.resNext.addEventListener('click', continueAfterResults);
+  dom.resFix.addEventListener('click', startRecommendedDrill);
+  dom.drillExit.addEventListener('click', () => exitDrill(false));
   dom.resStay.addEventListener('click', stayAfterRound);
 
   dom.bassLineBtn.addEventListener('click', () => {
@@ -1156,7 +1455,7 @@ function bootstrapGrooveLock(): void {
         e.preventDefault();
         if (e.repeat) return;
         if (!dom.results.hidden) {
-          void startPlaying();
+          continueAfterResults();
         } else {
           togglePlay();
         }
@@ -1165,7 +1464,19 @@ function bootstrapGrooveLock(): void {
       case 'NumpadEnter':
         if (!onButton && !dom.results.hidden) {
           e.preventDefault();
-          void startPlaying();
+          continueAfterResults();
+        }
+        break;
+      case 'KeyF':
+        if (!dom.results.hidden && pendingRecommendation && !activeDrill) {
+          e.preventDefault();
+          startRecommendedDrill();
+        }
+        break;
+      case 'KeyX':
+        if (activeDrill) {
+          e.preventDefault();
+          exitDrill(false);
         }
         break;
       case 'ArrowUp':
