@@ -365,6 +365,19 @@ Free practice (today's mode) stays available. The Coach is a guide, not a gate.
   - Not yet: drill levels persist across sessions (C3); Spot Fix only slows the full groove (true
     rhythm isolation needs custom step masks, C5).
 
+- **2026-10-12 — Listen back to every round** (requested: "record every round and play it back
+  during the scoring so the player gets a true feel"):
+  - Every graded round is recorded: the instrument channel streams from the capture worklet as PCM;
+    the backing track is **re-rendered offline from the logged scheduled sounds** (clean, sample-exact)
+    instead of recording the speakers (`src/audio/take.ts`).
+  - The bass is placed on the output clock and shifted by the latency compensation, so **playback
+    sounds exactly like what was graded**: hear yourself early → you were early, by the shown ms.
+  - Results card auto-plays the take (setting: Play back each round, default on). Timeline strip
+    shows bar lines and green/orange/blue note ticks with a moving head; **Mix · Bass · Drums**;
+    **L** replays; **WAV** download. The auto-continue countdown starts only after playback ends.
+  - Last 5 takes kept in memory (not persisted yet). Demo mode synthesizes the "played" bass so the
+    feature can be previewed without an instrument.
+
 ### Known gaps / next up
 
 - Step 1 polish after real-instrument testing: tune judgment thresholds, star rules, tip wording.
