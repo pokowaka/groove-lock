@@ -1,5 +1,5 @@
 import './style.css';
-import { AudioEngine } from './audio/audio-engine';
+import { AudioEngine, type BarScheduleInfo } from './audio/audio-engine';
 import { describeBassVoiceNote } from './dsp/pitch-utils';
 import type {
   DetectedPluckEvent,
@@ -11,7 +11,6 @@ import type {
 import {
   type BassGuideMode,
   type ClickPlacementMode,
-  formatPatternSummary,
   type GroovePatternId,
   isBassGuideActiveForBar,
   type PatternStepDescriptor,
@@ -22,10 +21,25 @@ import {
 } from './groove/patterns';
 import { type GradedPluckEntry, PocketGrader } from './groove/pocket-grader';
 import {
+  computeGrooveMeter,
+  formatStepName,
+  type GrooveTier,
+  type HitJudgment,
+  judgeHit,
+  type RoundHit,
+  type RoundSummary,
+  StreakTracker,
+  stepKeyOf,
+  summarizeRound,
+} from './groove/scoring';
+import {
   type GrooveLockProfile,
   loadProfile,
+  type RoundLengthBars,
   saveProfile,
+  type VisualGuideMode,
 } from './groove/storage';
+import { computeTapTempoBpm, TAP_RESET_GAP_MS } from './groove/tap-tempo';
 import {
   computeBarTarget,
   type DrillMode,
@@ -33,8 +47,31 @@ import {
   type Subdivision,
   type TargetNoteEvent,
 } from './groove/timeline';
+import { bindSegmented, DrawerController, type SegmentedControl } from './ui/controls';
+import { DemoPlayer } from './ui/demo-player';
+import { PocketMeter } from './ui/pocket-meter';
+import { HEAT_MIN_HITS, type LanePhase, TimelineLane } from './ui/timeline-lane';
 
-const MAX_SCOPE_MS = 60;
+const MIN_BPM = 40;
+const MAX_BPM = 200;
+const AUTO_CONTINUE_SEC = 6;
+const SESSION_HISTORY_LIMIT = 400;
+const STEP_HEAT_WINDOW = 16;
+
+const GROOVE_TIER_LABELS: Readonly<Record<GrooveTier, string>> = {
+  machine: 'Machine',
+  tight: 'Tight',
+  solid: 'Solid',
+  loose: 'Loose',
+  wobbly: 'Wobbly',
+};
+
+const JUDGMENT_LABELS: Readonly<Record<HitJudgment, string>> = {
+  locked: 'Locked',
+  pocket: 'In the pocket',
+  rushed: '← Rushed',
+  dragged: 'Dragged →',
+};
 
 function requireEl<T extends HTMLElement>(id: string): T {
   const el = document.getElementById(id);
@@ -44,18 +81,136 @@ function requireEl<T extends HTMLElement>(id: string): T {
   return el as T;
 }
 
+function formatSignedMs(ms: number, digits = 1): string {
+  const sign = ms > 0 ? '+' : ms < 0 ? '−' : '±';
+  return `${sign}${Math.abs(ms).toFixed(digits)} ms`;
+}
+
+function clampBpm(bpm: number): number {
+  return Math.min(MAX_BPM, Math.max(MIN_BPM, Math.round(bpm)));
+}
+
+/**
+ * Builds the one-line exercise description shown on the transport's Exercise chip.
+ */
+function formatExerciseSummary(p: GrooveLockProfile): string {
+  const grid: Record<Subdivision, string> = {
+    1: 'Quarter notes',
+    2: '8th notes',
+    3: 'Triplets',
+    4: '16th notes',
+  };
+  const patterns: Record<GroovePatternId, string> = {
+    uniform: grid[p.subdivision],
+    'motown-pocket': 'Motown pocket',
+    'funk-16th': 'Funk 16ths',
+    'shuffle-swing': 'Shuffle',
+    'octaves-8th': '8th octaves',
+  };
+  const parts = [patterns[p.groovePattern]];
+  if (p.soundMode === 'drums') parts.push('Drums');
+  const clicks: Record<ClickPlacementMode, string | null> = {
+    all: null,
+    'backbeat-2-4': 'Click on 2 & 4',
+    'one-drop-1': 'Click on 1',
+    'offbeat-and': 'Click on &s',
+  };
+  const click = clicks[p.clickPlacement];
+  if (click) parts.push(click);
+  if (p.gapBars === 1) parts.push('3+1 silent');
+  if (p.gapBars === 2) parts.push('2+2 silent');
+  if (p.pocketCenterMs > 0) parts.push('Laid back');
+  if (p.pocketCenterMs < 0) parts.push('Pushed');
+  const guides: Record<BassGuideMode, string | null> = {
+    off: null,
+    always: 'Bass along',
+    'demo-first': 'Demo first',
+    'call-response-1-1': 'Echo 1:1',
+    'call-response-1-3': 'Echo 1:3',
+  };
+  const guide = guides[p.bassGuideMode];
+  if (guide) parts.push(guide);
+  const drills: Record<DrillMode, string | null> = {
+    free: null,
+    'root-cycle': 'Cycle of 4ths',
+    'random-bar': 'Random notes',
+    'fixed-e': 'On E',
+    'fixed-a': 'On A',
+  };
+  const drill = drills[p.drillMode];
+  if (drill) parts.push(drill);
+  if (p.speedTrainerStep > 0) parts.push(`Auto +${p.speedTrainerStep}`);
+  parts.push(p.roundBars === 0 ? 'Endless' : `${p.roundBars}-bar rounds`);
+  return parts.join(' · ');
+}
+
 function bootstrapGrooveLock(): void {
   const dom = {
+    playBtn: requireEl<HTMLButtonElement>('play-btn'),
+    playLabel: requireEl<HTMLSpanElement>('play-label'),
+    bpmDown: requireEl<HTMLButtonElement>('bpm-down'),
+    bpmUp: requireEl<HTMLButtonElement>('bpm-up'),
+    bpmValue: requireEl<HTMLSpanElement>('bpm-value'),
+    tapBtn: requireEl<HTMLButtonElement>('tap-btn'),
+    exerciseChip: requireEl<HTMLButtonElement>('exercise-chip'),
+    exerciseSummary: requireEl<HTMLSpanElement>('exercise-summary'),
+    setupChip: requireEl<HTMLButtonElement>('setup-chip'),
     audioLed: requireEl<HTMLSpanElement>('audio-led'),
     audioStatusText: requireEl<HTMLSpanElement>('audio-status-text'),
+
+    phaseTag: requireEl<HTMLSpanElement>('phase-tag'),
+    barCounter: requireEl<HTMLSpanElement>('bar-counter'),
+    laneTarget: requireEl<HTMLSpanElement>('lane-target'),
+    bassLineBtn: requireEl<HTMLButtonElement>('bass-line-btn'),
+    timelineCanvas: requireEl<HTMLCanvasElement>('timeline-canvas'),
+    laneOverlay: requireEl<HTMLDivElement>('lane-overlay'),
+    overlayTitle: requireEl<HTMLDivElement>('overlay-title'),
+    overlaySub: requireEl<HTMLDivElement>('overlay-sub'),
+
+    lastOffset: requireEl<HTMLDivElement>('last-offset'),
+    judgment: requireEl<HTMLDivElement>('judgment'),
+    readoutSub: requireEl<HTMLDivElement>('readout-sub'),
+    pocketCanvas: requireEl<HTMLCanvasElement>('pocket-canvas'),
+    grooveTier: requireEl<HTMLDivElement>('groove-tier'),
+    grooveFill: requireEl<HTMLDivElement>('groove-fill'),
+    grooveSigma: requireEl<HTMLSpanElement>('groove-sigma'),
+    streakCurrent: requireEl<HTMLElement>('streak-current'),
+    streakBest: requireEl<HTMLElement>('streak-best'),
+
+    targetNote: requireEl<HTMLSpanElement>('target-note'),
+    targetSub: requireEl<HTMLSpanElement>('target-sub'),
+    detectedNote: requireEl<HTMLSpanElement>('detected-note'),
+    detectedSub: requireEl<HTMLSpanElement>('detected-sub'),
+    centsNeedle: requireEl<HTMLDivElement>('cents-needle'),
+    statPocket: requireEl<HTMLSpanElement>('stat-pocket'),
+    statMean: requireEl<HTMLSpanElement>('stat-mean'),
+    statSigma: requireEl<HTMLSpanElement>('stat-sigma'),
+    statCount: requireEl<HTMLSpanElement>('stat-count'),
+    statNotes: requireEl<HTMLSpanElement>('stat-notes'),
+
+    results: requireEl<HTMLDivElement>('results'),
+    resultsStars: requireEl<HTMLDivElement>('results-stars'),
+    resPocket: requireEl<HTMLSpanElement>('res-pocket'),
+    resSigma: requireEl<HTMLSpanElement>('res-sigma'),
+    resMean: requireEl<HTMLSpanElement>('res-mean'),
+    resStreak: requireEl<HTMLSpanElement>('res-streak'),
+    resTip: requireEl<HTMLParagraphElement>('res-tip'),
+    resTempo: requireEl<HTMLParagraphElement>('res-tempo'),
+    resNext: requireEl<HTMLButtonElement>('res-next'),
+    resStay: requireEl<HTMLButtonElement>('res-stay'),
+    countdown: requireEl<HTMLDivElement>('countdown'),
+    countdownFill: requireEl<HTMLDivElement>('countdown-fill'),
+    countdownText: requireEl<HTMLSpanElement>('countdown-text'),
+
+    drawerScrim: requireEl<HTMLDivElement>('drawer-scrim'),
+    exerciseDrawer: requireEl<HTMLElement>('exercise-drawer'),
+    setupDrawer: requireEl<HTMLElement>('setup-drawer'),
+    groovePatternSelect: requireEl<HTMLSelectElement>('groove-pattern-select'),
+    subdivisionHelp: requireEl<HTMLSpanElement>('subdivision-help'),
+    drillModeSelect: requireEl<HTMLSelectElement>('drill-mode-select'),
+    bassGuideHelp: requireEl<HTMLSpanElement>('bass-guide-help'),
+
     connectAudioBtn: requireEl<HTMLButtonElement>('connect-audio-btn'),
-    toggleMetronomeBtn: requireEl<HTMLButtonElement>('toggle-metronome-btn'),
-    loopbackPingBtn: requireEl<HTMLButtonElement>('loopback-ping-btn'),
-    calibrateBtn: requireEl<HTMLButtonElement>('calibrate-btn'),
-    resetStatsBtn: requireEl<HTMLButtonElement>('reset-stats-btn'),
-    calibrationBanner: requireEl<HTMLDivElement>('calibration-banner'),
-    calibrationPromptText: requireEl<HTMLSpanElement>('calibration-prompt-text'),
-    cancelCalibrateBtn: requireEl<HTMLButtonElement>('cancel-calibrate-btn'),
     deviceSelect: requireEl<HTMLSelectElement>('audio-device-select'),
     outputDeviceSelect: requireEl<HTMLSelectElement>('audio-output-select'),
     outputSinkStatus: requireEl<HTMLSpanElement>('output-sink-status'),
@@ -65,257 +220,365 @@ function bootstrapGrooveLock(): void {
     meterCh1: requireEl<HTMLDivElement>('meter-ch1'),
     meterCh2: requireEl<HTMLDivElement>('meter-ch2'),
     thresholdMarker1: requireEl<HTMLDivElement>('threshold-marker-1'),
-    thresholdMarker: requireEl<HTMLDivElement>('threshold-marker'),
+    thresholdMarker2: requireEl<HTMLDivElement>('threshold-marker-2'),
     thresholdSlider: requireEl<HTMLInputElement>('onset-threshold-slider'),
     thresholdValueLabel: requireEl<HTMLSpanElement>('threshold-value-label'),
     latencySlider: requireEl<HTMLInputElement>('latency-offset-slider'),
     latencyValueLabel: requireEl<HTMLSpanElement>('latency-value-label'),
-    bpmInput: requireEl<HTMLInputElement>('bpm-input'),
-    bpmDisplayVal: requireEl<HTMLSpanElement>('bpm-display-val'),
-    groovePatternSelect: requireEl<HTMLSelectElement>('groove-pattern-select'),
-    subdivisionSelect: requireEl<HTMLSelectElement>('subdivision-select'),
-    soundModeSelect: requireEl<HTMLSelectElement>('sound-mode-select'),
-    bassGuideSelect: requireEl<HTMLSelectElement>('bass-guide-select'),
-    clickPlacementSelect: requireEl<HTMLSelectElement>('click-placement-select'),
-    pocketFeelSelect: requireEl<HTMLSelectElement>('pocket-feel-select'),
-    pocketWindowSelect: requireEl<HTMLSelectElement>('pocket-window-select'),
-    gapModeSelect: requireEl<HTMLSelectElement>('gap-mode-select'),
-    speedTrainerSelect: requireEl<HTMLSelectElement>('speed-trainer-select'),
-    activeGridSummary: requireEl<HTMLSpanElement>('active-grid-summary'),
-    beatLamps: [
-      requireEl<HTMLDivElement>('beat-lamp-0'),
-      requireEl<HTMLDivElement>('beat-lamp-1'),
-      requireEl<HTMLDivElement>('beat-lamp-2'),
-      requireEl<HTMLDivElement>('beat-lamp-3'),
-    ],
-    patternStepCountLabel: requireEl<HTMLSpanElement>('pattern-step-count-label'),
-    previewPatternBtn: requireEl<HTMLButtonElement>('preview-pattern-btn'),
-    patternStepsStrip: requireEl<HTMLDivElement>('pattern-steps-strip'),
-    lastOffsetMs: requireEl<HTMLDivElement>('last-offset-ms'),
-    timingVerdictBadge: requireEl<HTMLSpanElement>('timing-verdict-badge'),
-    pocketZoneBox: requireEl<HTMLDivElement>('pocket-zone-box'),
-    pocketCenterMarker: requireEl<HTMLDivElement>('pocket-center-marker'),
-    hitMarkersLayer: requireEl<HTMLDivElement>('hit-markers-layer'),
-    statPocketPct: requireEl<HTMLSpanElement>('stat-pocket-pct'),
-    statMeanMs: requireEl<HTMLSpanElement>('stat-mean-ms'),
-    statJitterMs: requireEl<HTMLSpanElement>('stat-jitter-ms'),
-    statTotalHits: requireEl<HTMLSpanElement>('stat-total-hits'),
-    detectedFreqReadout: requireEl<HTMLSpanElement>('detected-freq-readout'),
-    drillModeSelect: requireEl<HTMLSelectElement>('drill-mode-select'),
-    instrumentRangeSelect: requireEl<HTMLSelectElement>('instrument-range-select'),
-    detectedNoteName: requireEl<HTMLDivElement>('detected-note-name'),
-    detectedCentsText: requireEl<HTMLSpanElement>('detected-cents-text'),
-    targetNoteName: requireEl<HTMLDivElement>('target-note-name'),
-    targetNoteStatus: requireEl<HTMLSpanElement>('target-note-status'),
-    centsNeedle: requireEl<HTMLDivElement>('cents-needle'),
-    noteHitRatio: requireEl<HTMLSpanElement>('note-hit-ratio'),
-    historyRowsBody: requireEl<HTMLDivElement>('history-rows-body'),
+    loopbackPingBtn: requireEl<HTMLButtonElement>('loopback-ping-btn'),
+    calibrateBtn: requireEl<HTMLButtonElement>('calibrate-btn'),
+    calibrationStatus: requireEl<HTMLParagraphElement>('calibration-status'),
   };
 
+  const isDemo = new URLSearchParams(window.location.search).has('demo');
   const profile: GrooveLockProfile = loadProfile();
   const grader = new PocketGrader();
+  const streak = new StreakTracker();
+  const drawers = new DrawerController(dom.drawerScrim);
+
+  let laneSteps: readonly PatternStepDescriptor[] = [];
+  let currentBarExpectedNote: TargetNoteEvent['expectedNote'] =
+    computeBarTarget(profile.drillMode, 0).targetNote;
+  let sessionOffsetsMs: number[] = [];
+  let stepFeelHistory = new Map<string, number[]>();
+
+  let isRoundActive = false;
+  let roundHits: RoundHit[] = [];
+  let roundExpectedTargets = 0;
+  let lastSummary: RoundSummary | null = null;
+  let countdownTimerId: number | null = null;
+  let tapTimesMs: number[] = [];
 
   let isCalibrating = false;
   let calibrationOffsetsMs: number[] = [];
   let isLoopbackPinging = false;
-  let patternCellElements: HTMLDivElement[] = [];
-  let patternNoteElements: HTMLSpanElement[] = [];
-  let currentBarExpectedNote: TargetNoteEvent['expectedNote'] =
-    computeBarTarget(profile.drillMode, 0).targetNote;
 
   const engine = new AudioEngine({
     onMeter: handleMeterSnapshot,
     onPluck: handlePluckEvent,
     onTargetScheduled: handleTargetScheduled,
-    onBeatLamp: handleBeatLamp,
+    onBeatLamp: () => {},
     onStepLamp: handleStepLamp,
     onLoopbackComplete: handleLoopbackComplete,
+    onBarScheduled: handleBarScheduled,
+    onCountInBeat: handleCountInBeat,
+    onRoundComplete: handleRoundComplete,
   });
 
-  function persistCurrentProfile(): void {
+  const lane = new TimelineLane(dom.timelineCanvas, () => engine.getAudioClockSec());
+  const pocketMeter = new PocketMeter(dom.pocketCanvas);
+
+  const demoPlayer = isDemo
+    ? new DemoPlayer({
+        deliver: handlePluckEvent,
+        readClock: () => engine.getAudioClockSec(),
+        readLatencyMs: () => profile.latencyCompensationMs,
+        readRange: () => profile.instrumentRange,
+      })
+    : null;
+
+  // ---------------------------------------------------------------------------
+  // Settings
+  // ---------------------------------------------------------------------------
+
+  function persist(): void {
     saveProfile(profile);
   }
 
-  function updateThresholdMarkerPosition(): void {
-    const pct = Math.min(100, Math.max(0, (profile.onsetThreshold / 0.2) * 100));
-    dom.thresholdMarker1.style.left = `${pct.toFixed(1)}%`;
-    dom.thresholdMarker.style.left = `${pct.toFixed(1)}%`;
-    dom.thresholdValueLabel.textContent = profile.onsetThreshold.toFixed(3);
+  function effectiveRoundBars(): number {
+    return isCalibrating ? 0 : profile.roundBars;
   }
 
-  function updatePocketZoneVisual(): void {
-    const centerPct = 50 + (profile.pocketCenterMs / MAX_SCOPE_MS) * 50;
-    const halfWidthPct = (profile.pocketWindowMs / MAX_SCOPE_MS) * 50;
-    const leftPct = Math.max(0, centerPct - halfWidthPct);
-    const rightPct = Math.min(100, centerPct + halfWidthPct);
-    const widthPct = Math.max(0, rightPct - leftPct);
-
-    dom.pocketZoneBox.style.left = `${leftPct.toFixed(2)}%`;
-    dom.pocketZoneBox.style.width = `${widthPct.toFixed(2)}%`;
-    dom.pocketCenterMarker.style.left = `${centerPct.toFixed(2)}%`;
-  }
-
-  function updateGridSummaryText(): void {
-    dom.activeGridSummary.textContent = formatPatternSummary(
-      profile.bpm,
-      profile.groovePattern,
-      profile.subdivision,
+  /** `true` when reference-bass bars are demos to listen to (not played along with or graded). */
+  function isCallResponseMode(): boolean {
+    return (
+      profile.bassGuideMode === 'call-response-1-1' ||
+      profile.bassGuideMode === 'call-response-1-3' ||
+      profile.bassGuideMode === 'demo-first'
     );
   }
 
-  function updatePatternStepNoteLabels(
-    barExpectedNote: TargetNoteEvent['expectedNote'],
-  ): void {
-    const steps = resolvePatternBarSteps(
-      profile.groovePattern,
-      profile.subdivision,
-    );
-    steps.forEach((step, idx) => {
-      const noteEl = patternNoteElements[idx];
-      if (!noteEl) {
-        return;
-      }
-      if (step.isTargetActive) {
-        const voice = describeBassVoiceNote(
-          barExpectedNote,
-          profile.instrumentRange,
-          step.octaveShift,
-        );
-        noteEl.textContent = voice.fullName;
-      } else {
-        noteEl.textContent = '—';
-      }
-    });
-  }
-
-  function renderPatternStepsStrip(): void {
-    const steps = resolvePatternBarSteps(
-      profile.groovePattern,
-      profile.subdivision,
-    );
-    const activeCount = steps.filter((s) => s.isTargetActive).length;
-    dom.patternStepCountLabel.textContent = `${activeCount}/${steps.length} Active Steps`;
-
-    // Enable/disable uniform subdivision dropdown depending on whether 'uniform' is selected
-    dom.subdivisionSelect.disabled = profile.groovePattern !== 'uniform';
-
-    dom.patternStepsStrip.replaceChildren();
-    patternNoteElements = [];
-    patternCellElements = steps.map((step) => {
-      const cell = document.createElement('div');
-      cell.className = step.isTargetActive
-        ? 'pattern-step-cell target-active'
-        : 'pattern-step-cell target-rest';
-
-      const beatSpan = document.createElement('span');
-      beatSpan.className = 'step-beat-label';
-      beatSpan.textContent = step.shortStepLabel;
-
-      const noteSpan = document.createElement('span');
-      noteSpan.className = 'step-note-label';
-      if (step.isTargetActive) {
-        const voice = describeBassVoiceNote(
-          currentBarExpectedNote,
-          profile.instrumentRange,
-          step.octaveShift,
-        );
-        noteSpan.textContent = voice.fullName;
-      } else {
-        noteSpan.textContent = '—';
-      }
-
-      cell.appendChild(beatSpan);
-      cell.appendChild(noteSpan);
-      dom.patternStepsStrip.appendChild(cell);
-      patternNoteElements.push(noteSpan);
-      return cell;
-    });
-  }
-
-  function updateTargetNoteDisplay(
-    barNumber: number,
-    overrideNote?: TargetNoteEvent['expectedNote'],
-    octaveShift = 0,
-  ): void {
-    const computed = computeBarTarget(profile.drillMode, barNumber);
-    const noteToDisplay = overrideNote ?? computed.targetNote;
-    currentBarExpectedNote = noteToDisplay;
-
-    const voice = describeBassVoiceNote(
-      noteToDisplay,
-      profile.instrumentRange,
-      octaveShift,
-    );
-    const guidePlayingThisBar = isBassGuideActiveForBar(
-      barNumber,
-      profile.bassGuideMode,
-    );
-    const isDemoBar =
-      (profile.bassGuideMode === 'call-response-1-1' ||
-        profile.bassGuideMode === 'call-response-1-3') &&
-      guidePlayingThisBar;
-
-    // Show the concrete bass note (e.g. E1, E2, A1) whenever a specific pitch is required
-    // OR whenever the Reference Bass Line is enabled so the user can see what note it is playing.
-    if (noteToDisplay === 'ANY' && profile.bassGuideMode === 'off') {
-      dom.targetNoteName.textContent = `ANY (${voice.fullName})`;
-      dom.targetNoteStatus.textContent = `Free Pitch · Guide Root: ${voice.fullName} (${voice.freqHz.toFixed(1)} Hz · ${voice.fretboardHint})`;
-      return;
+  /** Explains the listen/play structure of the selected reference bass mode for this round length. */
+  function updateBassGuideHelp(): void {
+    const n = profile.roundBars;
+    const rounds = n === 0 ? 'each start' : `each ${n}-bar round`;
+    const texts: Record<BassGuideMode, string> = {
+      off: 'No reference bass. Just you and the groove.',
+      'demo-first':
+        n === 0
+          ? 'Listen to 1 bar, then you play every bar after.'
+          : `Listen to 1 bar, then you play ${n - 1} bars. Repeats ${rounds}.`,
+      always: 'The bass plays with you the whole time (not a demo, all bars graded).',
+      'call-response-1-3': 'Listen 1 bar, play 3, repeat.',
+      'call-response-1-1': 'Listen 1 bar, play 1, repeat.',
+    };
+    let text = texts[profile.bassGuideMode];
+    if (profile.bassGuideMode !== 'off' && profile.bassGuideMode !== 'always' && profile.soundMode === 'click') {
+      text += ' Tip: pick Drums so a groove keeps going while you play.';
     }
-
-    dom.targetNoteName.textContent = voice.fullName;
-
-    if (isDemoBar) {
-      dom.targetNoteStatus.textContent = `DEMO BAR — Playing ${voice.fullName} (${voice.freqHz.toFixed(1)} Hz · ${voice.fretboardHint})`;
-    } else if (noteToDisplay === 'ANY') {
-      dom.targetNoteStatus.textContent = `Bass Playing ${voice.fullName} (${voice.freqHz.toFixed(1)} Hz · ${voice.fretboardHint}) — Free Pitch`;
-    } else {
-      dom.targetNoteStatus.textContent = `${voice.fullName} (${voice.freqHz.toFixed(1)} Hz · ${voice.fretboardHint}) · ${computed.statusCaption}`;
-    }
+    dom.bassGuideHelp.textContent = text;
   }
 
-  function applyProfileToUiAndEngine(): void {
-    dom.channelSelect.value = profile.selectedChannel;
-    dom.thresholdSlider.value = String(profile.onsetThreshold);
-    dom.latencySlider.value = String(profile.latencyCompensationMs);
-    dom.latencyValueLabel.textContent = `${profile.latencyCompensationMs} ms`;
-    dom.bpmInput.value = String(profile.bpm);
-    dom.bpmDisplayVal.textContent = String(profile.bpm);
-    dom.groovePatternSelect.value = profile.groovePattern;
-    dom.subdivisionSelect.value = String(profile.subdivision);
-    dom.soundModeSelect.value = profile.soundMode;
-    dom.bassGuideSelect.value = profile.bassGuideMode;
-    dom.clickPlacementSelect.value = profile.clickPlacement;
-    dom.pocketFeelSelect.value = String(profile.pocketCenterMs);
-    dom.pocketWindowSelect.value = String(profile.pocketWindowMs);
-    dom.gapModeSelect.value = String(profile.gapBars);
-    dom.speedTrainerSelect.value = String(profile.speedTrainerStep);
-    dom.drillModeSelect.value = profile.drillMode;
-    dom.instrumentRangeSelect.value = profile.instrumentRange;
+  function isListenBar(barNumber: number): boolean {
+    return isCallResponseMode() && isBassGuideActiveForBar(barNumber, profile.bassGuideMode);
+  }
 
-    engine.setDspConfig({
-      channelMode: profile.selectedChannel,
-      onsetThreshold: profile.onsetThreshold,
-      instrumentRange: profile.instrumentRange,
-    });
-    engine.setTransportConfig({
-      bpm: profile.bpm,
-      subdivision: profile.subdivision,
-      groovePattern: profile.groovePattern,
+  const segmented = new Map<string, SegmentedControl>();
+
+  function onSettingChanged(setting: string, raw: string): void {
+    switch (setting) {
+      case 'subdivision':
+        profile.subdivision = Number(raw) as Subdivision;
+        grader.clearTimeline();
+        engine.setTransportConfig({ subdivision: profile.subdivision });
+        rebuildLane();
+        break;
+      case 'soundMode':
+        profile.soundMode = raw as SoundEngineMode;
+        engine.setTransportConfig({ soundMode: profile.soundMode });
+        break;
+      case 'bassGuideMode':
+        profile.bassGuideMode = raw as BassGuideMode;
+        engine.setTransportConfig({ bassGuideMode: profile.bassGuideMode });
+        syncBassLineButton();
+        updateTargetDisplay(engine.getCurrentBarNumber());
+        break;
+      case 'clickPlacement':
+        profile.clickPlacement = raw as ClickPlacementMode;
+        engine.setTransportConfig({ clickPlacement: profile.clickPlacement });
+        break;
+      case 'gapBars':
+        profile.gapBars = Number(raw) as GapClickMode;
+        engine.setTransportConfig({ gapBars: profile.gapBars });
+        break;
+      case 'speedTrainerStep':
+        profile.speedTrainerStep = Number(raw) as SpeedTrainerStep;
+        grader.resetSpeedTrainerWindow();
+        break;
+      case 'pocketCenterMs':
+        profile.pocketCenterMs = Number(raw) as PocketFeelOffsetMs;
+        engine.setTransportConfig({ pocketCenterMs: profile.pocketCenterMs });
+        applyPocketSettings();
+        break;
+      case 'pocketWindowMs':
+        profile.pocketWindowMs = Number(raw);
+        applyPocketSettings();
+        break;
+      case 'instrumentRange':
+        profile.instrumentRange = raw as InstrumentRange;
+        engine.setDspConfig({ instrumentRange: profile.instrumentRange });
+        refreshNoteLabels();
+        updateTargetDisplay(engine.getCurrentBarNumber());
+        break;
+      case 'roundBars':
+        profile.roundBars = Number(raw) as RoundLengthBars;
+        engine.setTransportConfig({ roundBars: effectiveRoundBars() });
+        if (!engine.isMetronomeRunning()) {
+          setBarCounterIdle();
+        }
+        break;
+      case 'autoContinue':
+        profile.autoContinue = raw === 'true';
+        break;
+      case 'visualGuide':
+        profile.visualGuide = raw as VisualGuideMode;
+        lane.setGuide(profile.visualGuide);
+        break;
+    }
+    persist();
+    updateExerciseSummary();
+    updateBassGuideHelp();
+  }
+
+  document.querySelectorAll<HTMLElement>('.segmented[data-setting]').forEach((el) => {
+    const setting = el.dataset.setting ?? '';
+    segmented.set(
+      setting,
+      bindSegmented(el, (value) => onSettingChanged(setting, value)),
+    );
+  });
+
+  function syncSegmentedFromProfile(): void {
+    const values: Record<string, string> = {
+      subdivision: String(profile.subdivision),
       soundMode: profile.soundMode,
       bassGuideMode: profile.bassGuideMode,
       clickPlacement: profile.clickPlacement,
-      pocketCenterMs: profile.pocketCenterMs,
-      gapBars: profile.gapBars,
-      drillMode: profile.drillMode,
-    });
+      gapBars: String(profile.gapBars),
+      speedTrainerStep: String(profile.speedTrainerStep),
+      pocketCenterMs: String(profile.pocketCenterMs),
+      pocketWindowMs: String(profile.pocketWindowMs),
+      instrumentRange: profile.instrumentRange,
+      roundBars: String(profile.roundBars),
+      autoContinue: String(profile.autoContinue),
+      visualGuide: profile.visualGuide,
+    };
+    for (const [setting, value] of Object.entries(values)) {
+      segmented.get(setting)?.set(value);
+    }
+  }
 
-    updateThresholdMarkerPosition();
-    updatePocketZoneVisual();
-    updateGridSummaryText();
-    renderPatternStepsStrip();
-    syncBassLineButtonUI();
-    updateTargetNoteDisplay(0);
+  function updateExerciseSummary(): void {
+    const summary = formatExerciseSummary(profile);
+    dom.exerciseSummary.textContent = summary;
+    dom.exerciseChip.title = summary;
+  }
+
+  function applyPocketSettings(): void {
+    lane.setPocketWindow(profile.pocketWindowMs);
+    pocketMeter.setPocket(profile.pocketCenterMs, profile.pocketWindowMs);
+    renderSessionStats();
+    dom.readoutSub.textContent = describeFeelTarget();
+  }
+
+  function describeFeelTarget(): string {
+    if (profile.pocketCenterMs > 0) {
+      return `vs. laid-back target (+${profile.pocketCenterMs} ms)`;
+    }
+    if (profile.pocketCenterMs < 0) {
+      return `vs. pushed target (${profile.pocketCenterMs} ms)`;
+    }
+    return 'vs. the grid';
+  }
+
+  function setBpm(bpm: number): void {
+    const next = clampBpm(bpm);
+    if (next === profile.bpm) {
+      return;
+    }
+    profile.bpm = next;
+    persist();
+    dom.bpmValue.textContent = String(profile.bpm);
+    engine.setTransportConfig({ bpm: profile.bpm });
+  }
+
+  function handleTap(): void {
+    const now = performance.now();
+    const last = tapTimesMs[tapTimesMs.length - 1];
+    if (last !== undefined && now - last > TAP_RESET_GAP_MS) {
+      tapTimesMs = [];
+    }
+    tapTimesMs.push(now);
+    tapTimesMs = tapTimesMs.slice(-8);
+    const bpm = computeTapTempoBpm(tapTimesMs);
+    if (bpm !== null) {
+      setBpm(bpm);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Lane & target note
+  // ---------------------------------------------------------------------------
+
+  function noteLabelsFor(
+    steps: readonly PatternStepDescriptor[],
+    note: TargetNoteEvent['expectedNote'],
+  ): string[] {
+    return steps.map((step) => {
+      if (!step.isTargetActive) {
+        return '';
+      }
+      if (note === 'ANY' && profile.bassGuideMode === 'off') {
+        return '';
+      }
+      return describeBassVoiceNote(note, profile.instrumentRange, step.octaveShift).fullName;
+    });
+  }
+
+  function rebuildLane(): void {
+    laneSteps = resolvePatternBarSteps(profile.groovePattern, profile.subdivision);
+    lane.setSteps(laneSteps, noteLabelsFor(laneSteps, currentBarExpectedNote));
+    stepFeelHistory = new Map();
+    const disabled = profile.groovePattern !== 'uniform';
+    segmented.get('subdivision')?.setDisabled(disabled);
+    dom.subdivisionHelp.hidden = !disabled;
+  }
+
+  function refreshNoteLabels(): void {
+    lane.setNoteLabels(noteLabelsFor(laneSteps, currentBarExpectedNote));
+  }
+
+  function updateTargetDisplay(barNumber: number, overrideNote?: TargetNoteEvent['expectedNote']): void {
+    const note = overrideNote ?? computeBarTarget(profile.drillMode, barNumber).targetNote;
+    if (note !== currentBarExpectedNote) {
+      currentBarExpectedNote = note;
+      refreshNoteLabels();
+    }
+    dom.targetNote.classList.remove('is-match', 'is-miss');
+    if (note === 'ANY') {
+      dom.targetNote.textContent = 'Any';
+      dom.targetSub.textContent =
+        profile.bassGuideMode === 'off'
+          ? 'Free groove'
+          : `Bass plays ${describeBassVoiceNote(note, profile.instrumentRange).fullName}`;
+      dom.laneTarget.textContent = 'Any note';
+      return;
+    }
+    const voice = describeBassVoiceNote(note, profile.instrumentRange);
+    dom.targetNote.textContent = voice.fullName;
+    dom.targetSub.textContent = voice.fretboardHint;
+    dom.laneTarget.textContent = `Play ${voice.fullName}`;
+  }
+
+  function phaseOf(info: BarScheduleInfo): LanePhase {
+    if (info.kind === 'count-in') return 'count-in';
+    if (isListenBar(info.barNumber)) return 'listen';
+    if (info.isSilentGapBar) return 'silent';
+    return 'play';
+  }
+
+  function setPhaseTag(phase: LanePhase | 'ready', text?: string): void {
+    const labels: Record<LanePhase | 'ready', string> = {
+      ready: 'Ready',
+      'count-in': 'Count-in',
+      play: 'Your turn',
+      listen: 'Listen',
+      silent: 'Silent bar',
+    };
+    dom.phaseTag.dataset.phase = phase;
+    dom.phaseTag.textContent = text ?? labels[phase];
+  }
+
+  function setBarCounterIdle(): void {
+    dom.barCounter.textContent =
+      profile.roundBars === 0 ? 'Endless' : `${profile.roundBars}-bar rounds`;
+  }
+
+  function showOverlay(title: string, sub: string): void {
+    dom.overlayTitle.innerHTML = '';
+    const parts = title.split('Space');
+    parts.forEach((part, i) => {
+      dom.overlayTitle.append(part);
+      if (i < parts.length - 1) {
+        const kbd = document.createElement('kbd');
+        kbd.textContent = 'Space';
+        dom.overlayTitle.append(kbd);
+      }
+    });
+    dom.overlaySub.textContent = sub;
+    dom.laneOverlay.classList.remove('is-hidden');
+  }
+
+  function hideOverlay(): void {
+    dom.laneOverlay.classList.add('is-hidden');
+  }
+
+  // ---------------------------------------------------------------------------
+  // Audio device setup
+  // ---------------------------------------------------------------------------
+
+  function updateThresholdMarkers(): void {
+    const pct = Math.min(100, Math.max(0, (profile.onsetThreshold / 0.2) * 100));
+    dom.thresholdMarker1.style.left = `${pct.toFixed(1)}%`;
+    dom.thresholdMarker2.style.left = `${pct.toFixed(1)}%`;
+    dom.thresholdValueLabel.textContent = profile.onsetThreshold.toFixed(3);
+  }
+
+  function setLatency(ms: number): void {
+    profile.latencyCompensationMs = ms;
+    persist();
+    dom.latencySlider.value = String(ms);
+    dom.latencyValueLabel.textContent = `${ms} ms`;
   }
 
   function populateDeviceDropdowns(
@@ -328,197 +591,260 @@ function bootstrapGrooveLock(): void {
     inputs.forEach((dev, idx) => {
       const opt = document.createElement('option');
       opt.value = dev.deviceId;
-      opt.textContent = dev.label || `Audio Input ${idx + 1}`;
-      if (dev.deviceId === resolvedInputId) {
-        opt.selected = true;
-      }
+      opt.textContent = dev.label || `Audio input ${idx + 1}`;
+      opt.selected = dev.deviceId === resolvedInputId;
       dom.deviceSelect.appendChild(opt);
     });
 
     dom.outputDeviceSelect.replaceChildren();
-    const defaultOutOpt = document.createElement('option');
-    defaultOutOpt.value = '';
-    defaultOutOpt.textContent = 'System Default Output';
-    dom.outputDeviceSelect.appendChild(defaultOutOpt);
-
+    const defaultOut = document.createElement('option');
+    defaultOut.value = '';
+    defaultOut.textContent = 'System default output';
+    dom.outputDeviceSelect.appendChild(defaultOut);
     outputs.forEach((dev, idx) => {
       const opt = document.createElement('option');
       opt.value = dev.deviceId;
-      opt.textContent = dev.label || `Audio Output ${idx + 1}`;
-      if (dev.deviceId === resolvedOutputId) {
-        opt.selected = true;
-      }
+      opt.textContent = dev.label || `Audio output ${idx + 1}`;
+      opt.selected = dev.deviceId === resolvedOutputId;
       dom.outputDeviceSelect.appendChild(opt);
     });
   }
 
-  async function applyOutputSinkSelection(
-    sinkDeviceId: string,
-    playConfirmationTick: boolean,
-  ): Promise<void> {
-    const status = await engine.applyOutputDevice(
-      sinkDeviceId,
-      playConfirmationTick,
-    );
-    if (status === 'direct') {
-      dom.outputSinkStatus.textContent = 'Direct Output';
-    } else if (status === 'default') {
-      dom.outputSinkStatus.textContent = 'System Default';
-    } else if (status === 'unsupported') {
-      dom.outputSinkStatus.textContent = 'macOS Default';
-    } else {
-      dom.outputSinkStatus.textContent = 'Fallback Default';
-    }
+  async function applyOutputSinkSelection(sinkDeviceId: string, tick: boolean): Promise<void> {
+    const status = await engine.applyOutputDevice(sinkDeviceId, tick);
+    const labels: Record<typeof status, string> = {
+      direct: 'Direct',
+      default: 'System default',
+      unsupported: 'macOS default',
+      error: 'Fallback default',
+    };
+    dom.outputSinkStatus.textContent = labels[status];
   }
 
-  async function connectAudioInterface(
-    requestedDeviceId: string,
-  ): Promise<void> {
+  async function connectAudioInterface(requestedDeviceId: string): Promise<boolean> {
     try {
-      dom.audioStatusText.textContent = 'Connecting...';
+      dom.audioStatusText.textContent = 'Connecting…';
       dom.audioLed.className = 'led-dot warn';
-
-      const deviceLists = await engine.connectInput(
-        requestedDeviceId,
-        profile.selectedOutputDeviceId,
-      );
-
-      profile.selectedDeviceId = deviceLists.resolvedInputId;
-      if (!profile.selectedOutputDeviceId && deviceLists.resolvedOutputId) {
-        profile.selectedOutputDeviceId = deviceLists.resolvedOutputId;
+      const lists = await engine.connectInput(requestedDeviceId, profile.selectedOutputDeviceId);
+      profile.selectedDeviceId = lists.resolvedInputId;
+      if (!profile.selectedOutputDeviceId && lists.resolvedOutputId) {
+        profile.selectedOutputDeviceId = lists.resolvedOutputId;
       }
-      persistCurrentProfile();
-
+      persist();
       populateDeviceDropdowns(
-        deviceLists.inputs,
-        deviceLists.outputs,
+        lists.inputs,
+        lists.outputs,
         profile.selectedDeviceId,
         profile.selectedOutputDeviceId,
       );
-
       await applyOutputSinkSelection(profile.selectedOutputDeviceId, false);
-
       const sr = engine.getOutputSampleRate();
-      if (sr) {
-        dom.sampleRateLabel.textContent = `${(sr / 1000).toFixed(1)} kHz`;
-      }
+      dom.sampleRateLabel.textContent = sr ? `${(sr / 1000).toFixed(1)} kHz` : '';
+      const inputLabel = lists.inputs.find((d) => d.deviceId === lists.resolvedInputId)?.label ?? '';
       dom.audioLed.className = 'led-dot active';
-      dom.audioStatusText.textContent = 'Scarlett Live';
-      dom.connectAudioBtn.textContent = 'Reconnect Audio';
-      dom.toggleMetronomeBtn.disabled = false;
+      dom.audioStatusText.textContent = /scarlett|focusrite/i.test(inputLabel) ? 'Scarlett live' : 'Input live';
+      dom.connectAudioBtn.textContent = 'Reconnect audio input';
       dom.loopbackPingBtn.disabled = false;
       dom.calibrateBtn.disabled = false;
+      return true;
     } catch {
       dom.audioLed.className = 'led-dot warn';
-      dom.audioStatusText.textContent = 'Input Blocked / Error';
+      dom.audioStatusText.textContent = 'Input blocked';
+      return false;
     }
   }
 
   function handleMeterSnapshot(snapshot: MeterSnapshot): void {
-    const pct1 = Math.min(100, (snapshot.rmsCh0 / 0.2) * 100);
-    const pct2 = Math.min(100, (snapshot.rmsCh1 / 0.2) * 100);
-    dom.meterCh1.style.width = `${pct1.toFixed(1)}%`;
-    dom.meterCh2.style.width = `${pct2.toFixed(1)}%`;
+    dom.meterCh1.style.width = `${Math.min(100, (snapshot.rmsCh0 / 0.2) * 100).toFixed(1)}%`;
+    dom.meterCh2.style.width = `${Math.min(100, (snapshot.rmsCh1 / 0.2) * 100).toFixed(1)}%`;
+    dom.peakDbReadout.textContent =
+      snapshot.activeRms > 0.0001 ? `${(20 * Math.log10(snapshot.activeRms)).toFixed(1)} dB` : '−∞ dB';
+  }
 
-    if (snapshot.activeRms > 0.0001) {
-      const db = 20 * Math.log10(snapshot.activeRms);
-      dom.peakDbReadout.textContent = `${db.toFixed(1)} dB`;
-    } else {
-      dom.peakDbReadout.textContent = '-∞ dB';
+  // ---------------------------------------------------------------------------
+  // Transport & rounds
+  // ---------------------------------------------------------------------------
+
+  function setPlayButton(playing: boolean): void {
+    dom.playBtn.classList.toggle('is-playing', playing);
+    dom.playLabel.textContent = playing ? 'Stop' : 'Play';
+    dom.playBtn.querySelector('.play-icon')!.textContent = playing ? '■' : '▶';
+  }
+
+  async function startPlaying(): Promise<void> {
+    cancelCountdown();
+    dom.results.hidden = true;
+    if (!isDemo && !engine.isInputConnected()) {
+      await connectAudioInterface(dom.deviceSelect.value || profile.selectedDeviceId);
     }
+    roundHits = [];
+    roundExpectedTargets = 0;
+    isRoundActive = effectiveRoundBars() > 0;
+    grader.clearTimeline();
+    lane.clearBars();
+    engine.setTransportConfig({ roundBars: effectiveRoundBars(), countInBars: 1 });
+    engine.startMetronome();
+    setPlayButton(true);
+    hideOverlay();
+    setPhaseTag('count-in');
+    dom.barCounter.textContent = 'Get ready';
+  }
+
+  function stopPlaying(): void {
+    engine.stopMetronome();
+    isRoundActive = false;
+    cancelCountdown();
+    dom.results.hidden = true;
+    lane.clearBars();
+    setPlayButton(false);
+    setPhaseTag('ready');
+    setBarCounterIdle();
+    showOverlay('Paused — press Space to play', 'Your session stats are kept. Press R to reset.');
+  }
+
+  function togglePlay(): void {
+    if (engine.isMetronomeRunning()) {
+      stopPlaying();
+    } else {
+      void startPlaying();
+    }
+  }
+
+  function handleRoundComplete(): void {
+    isRoundActive = false;
+    setPlayButton(false);
+    setPhaseTag('ready', 'Round done');
+    lane.clearBars();
+
+    const summary = summarizeRound(roundHits, {
+      pocketWindowMs: profile.pocketWindowMs,
+      expectedTargetCount: roundExpectedTargets,
+    });
+    lastSummary = summary;
+
+    let tempoMessage: string | null = null;
+    if (summary.stars === 3 && profile.speedTrainerStep > 0 && profile.bpm < MAX_BPM) {
+      setBpm(profile.bpm + profile.speedTrainerStep);
+      tempoMessage = `Tempo up → ${profile.bpm} BPM next round`;
+    }
+    showResults(summary, tempoMessage);
+  }
+
+  function showResults(summary: RoundSummary, tempoMessage: string | null): void {
+    dom.resultsStars.replaceChildren();
+    for (let i = 0; i < 3; i++) {
+      const star = document.createElement('span');
+      star.textContent = '★';
+      if (i < summary.stars) star.className = 'on';
+      dom.resultsStars.appendChild(star);
+    }
+    dom.resultsStars.setAttribute('aria-label', `${summary.stars} of 3 stars`);
+    dom.resPocket.textContent = `${summary.inPocketPct}%`;
+    dom.resSigma.textContent = summary.sigmaMs === null ? '—' : `${summary.sigmaMs.toFixed(1)} ms`;
+    dom.resMean.textContent =
+      summary.meanFeelDeltaMs === null ? '—' : formatSignedMs(summary.meanFeelDeltaMs);
+    dom.resStreak.textContent = String(summary.bestStreak);
+    dom.resTip.textContent = summary.tip;
+    dom.resTempo.hidden = tempoMessage === null;
+    dom.resTempo.textContent = tempoMessage ?? '';
+    dom.results.hidden = false;
+
+    dom.countdown.hidden = !profile.autoContinue;
+    if (profile.autoContinue) {
+      startCountdown();
+    }
+  }
+
+  function startCountdown(): void {
+    cancelCountdown();
+    const startMs = performance.now();
+    const tick = (): void => {
+      const elapsedSec = (performance.now() - startMs) / 1000;
+      const remaining = Math.max(0, AUTO_CONTINUE_SEC - elapsedSec);
+      dom.countdownFill.style.transform = `scaleX(${(remaining / AUTO_CONTINUE_SEC).toFixed(3)})`;
+      dom.countdownText.textContent = `Next round in ${Math.ceil(remaining)} s`;
+      if (remaining <= 0) {
+        cancelCountdown();
+        void startPlaying();
+      }
+    };
+    tick();
+    countdownTimerId = window.setInterval(tick, 100);
+  }
+
+  function cancelCountdown(): void {
+    if (countdownTimerId !== null) {
+      window.clearInterval(countdownTimerId);
+      countdownTimerId = null;
+    }
+  }
+
+  function stayAfterRound(): void {
+    cancelCountdown();
+    dom.results.hidden = true;
+    const s = lastSummary;
+    const stars = s ? '★'.repeat(s.stars) + '☆'.repeat(3 - s.stars) : '';
+    showOverlay(
+      'Press Space for the next round',
+      s ? `Last round ${stars} · ${s.inPocketPct}% in pocket` : '',
+    );
+    setPhaseTag('ready');
+    setBarCounterIdle();
+  }
+
+  function handleBarScheduled(info: BarScheduleInfo): void {
+    lane.pushBar(info, phaseOf(info));
+  }
+
+  function handleCountInBeat(beatInBar: number): void {
+    setPhaseTag('count-in', `Count-in · ${beatInBar + 1}`);
   }
 
   function handleTargetScheduled(event: TargetNoteEvent): void {
+    if (isListenBar(event.barNumber)) {
+      return;
+    }
     grader.pushTargetEvent(event);
-    if (event.beatInBar === 0 && event.subIndex === 0) {
-      updateTargetNoteDisplay(event.barNumber, event.expectedNote);
+    roundExpectedTargets++;
+    demoPlayer?.onTarget(event);
 
-      // Check Auto-Tempo Speed Trainer at bar boundaries
-      if (
-        profile.speedTrainerStep > 0 &&
-        grader.consumeSpeedTrainerStepUpIfReady(4, 0.85)
-      ) {
-        const nextBpm = Math.min(200, profile.bpm + profile.speedTrainerStep);
-        if (nextBpm !== profile.bpm) {
-          profile.bpm = nextBpm;
-          persistCurrentProfile();
-          dom.bpmInput.value = String(profile.bpm);
-          dom.bpmDisplayVal.textContent = String(profile.bpm);
-          engine.setTransportConfig({ bpm: profile.bpm });
-          updateGridSummaryText();
-        }
-      }
+    if (
+      event.beatInBar === 0 &&
+      event.subIndex === 0 &&
+      effectiveRoundBars() === 0 &&
+      profile.speedTrainerStep > 0 &&
+      grader.consumeSpeedTrainerStepUpIfReady(4, 0.85)
+    ) {
+      setBpm(profile.bpm + profile.speedTrainerStep);
     }
   }
 
-  function handleBeatLamp(
-    beatInBar: number,
-    _barNumber: number,
-    isSilentGapBar: boolean,
-  ): void {
-    dom.beatLamps.forEach((lamp, idx) => {
-      lamp.className = 'beat-lamp';
-      if (isSilentGapBar) {
-        lamp.classList.add('gap-silent');
-      }
-      if (idx === beatInBar) {
-        lamp.classList.add(idx === 0 ? 'active-downbeat' : 'active-beat');
-      }
-    });
+  function handleStepLamp(step: PatternStepDescriptor, target: TargetNoteEvent): void {
+    if (step.stepInBar !== 0) {
+      return;
+    }
+    const n = target.barNumber + 1;
+    dom.barCounter.textContent =
+      effectiveRoundBars() > 0 ? `Bar ${n} / ${effectiveRoundBars()}` : `Bar ${n}`;
+    setPhaseTag(
+      isListenBar(target.barNumber) ? 'listen' : target.isSilentGapBar ? 'silent' : 'play',
+    );
+    updateTargetDisplay(target.barNumber, target.expectedNote);
   }
 
-  function handleStepLamp(
-    step: PatternStepDescriptor,
-    target: TargetNoteEvent,
-  ): void {
-    if (step.stepInBar === 0) {
-      updatePatternStepNoteLabels(target.expectedNote);
-    }
-    if (step.isTargetActive || step.stepInBar === 0) {
-      updateTargetNoteDisplay(
-        target.barNumber,
-        target.expectedNote,
-        step.octaveShift,
-      );
-    }
-
-    patternCellElements.forEach((cell, idx) => {
-      if (idx === step.stepInBar) {
-        cell.classList.add('playhead-current');
-      } else {
-        cell.classList.remove('playhead-current');
-      }
-    });
-  }
+  // ---------------------------------------------------------------------------
+  // Plucks & grading
+  // ---------------------------------------------------------------------------
 
   function handlePluckEvent(pluck: DetectedPluckEvent): void {
-    if (pluck.pitch) {
-      dom.detectedNoteName.textContent = pluck.pitch.fullName;
-      dom.detectedFreqReadout.textContent = `${pluck.pitch.freqHz.toFixed(1)} Hz`;
-      const centsSign = pluck.pitch.cents >= 0 ? '+' : '';
-      dom.detectedCentsText.textContent = `${centsSign}${pluck.pitch.cents} cents`;
-
-      const clampedCents = Math.max(-50, Math.min(50, pluck.pitch.cents));
-      const needlePct = 50 + (clampedCents / 50) * 50;
-      dom.centsNeedle.style.left = `${needlePct.toFixed(1)}%`;
-      dom.centsNeedle.style.backgroundColor =
-        Math.abs(pluck.pitch.cents) <= 12
-          ? 'var(--accent-pocket)'
-          : 'var(--accent-amber)';
-    } else {
-      dom.detectedNoteName.textContent = 'X';
-      dom.detectedCentsText.textContent = 'Percussive / Muted pluck';
-    }
-
+    renderDetectedNote(pluck);
     if (!engine.isMetronomeRunning()) {
       return;
     }
-
     if (isCalibrating) {
       recordCalibrationHit(pluck.rawOnsetTimeSec);
       return;
     }
-
     const graded = grader.evaluatePluck(pluck, {
       latencyCompensationMs: profile.latencyCompensationMs,
       bpm: profile.bpm,
@@ -526,249 +852,160 @@ function bootstrapGrooveLock(): void {
       pocketWindowMs: profile.pocketWindowMs,
       pocketCenterMs: profile.pocketCenterMs,
     });
+    if (graded) {
+      handleGradedHit(graded);
+    }
+  }
 
-    if (!graded) {
+  function renderDetectedNote(pluck: DetectedPluckEvent): void {
+    if (!pluck.pitch) {
+      dom.detectedNote.textContent = 'X';
+      dom.detectedSub.textContent = 'Muted / ghost note';
       return;
     }
-
-    renderPluckFeedback(graded);
-    renderPocketScopePips();
-    renderSessionStats();
-    renderHistoryRows();
+    const cents = pluck.pitch.cents;
+    dom.detectedNote.textContent = pluck.pitch.fullName;
+    dom.detectedSub.textContent = `${cents >= 0 ? '+' : ''}${cents}¢ · ${pluck.pitch.freqHz.toFixed(1)} Hz`;
+    const clamped = Math.max(-50, Math.min(50, cents));
+    dom.centsNeedle.style.left = `${50 + clamped}%`;
+    dom.centsNeedle.style.backgroundColor =
+      Math.abs(cents) <= 10 ? 'var(--accent-locked)' : 'var(--accent-amber)';
   }
 
-  function renderPluckFeedback(entry: GradedPluckEntry): void {
-    const sign = entry.offsetMs >= 0 ? '+' : '';
-    dom.lastOffsetMs.textContent = `${sign}${entry.offsetMs.toFixed(1)} ms`;
+  function handleGradedHit(entry: GradedPluckEntry): void {
+    const judgment = judgeHit(entry.feelDeltaMs, profile.pocketWindowMs);
+    const t = entry.targetEvent;
+    const subdivision = engine.getEffectiveSubdivision();
+    const key = stepKeyOf(t.beatInBar, t.subIndex);
 
-    if (entry.verdict === 'pocket') {
-      dom.lastOffsetMs.style.color = 'var(--accent-pocket)';
-      dom.timingVerdictBadge.textContent =
-        profile.pocketCenterMs === 0
-          ? 'IN THE POCKET'
-          : profile.pocketCenterMs > 0
-            ? 'LAID-BACK POCKET LOCK'
-            : 'PUSHED POCKET LOCK';
-      dom.timingVerdictBadge.style.backgroundColor = 'var(--accent-pocket-dim)';
-      dom.timingVerdictBadge.style.color = 'var(--accent-pocket)';
-    } else if (entry.verdict === 'rushing') {
-      dom.lastOffsetMs.style.color = 'var(--accent-rush)';
-      dom.timingVerdictBadge.textContent = `RUSHING (${Math.abs(entry.feelDeltaMs).toFixed(0)} ms EARLY)`;
-      dom.timingVerdictBadge.style.backgroundColor = 'hsla(14, 82%, 58%, 0.16)';
-      dom.timingVerdictBadge.style.color = 'var(--accent-rush)';
-    } else {
-      dom.lastOffsetMs.style.color = 'var(--accent-drag)';
-      dom.timingVerdictBadge.textContent = `DRAGGING (+${entry.feelDeltaMs.toFixed(0)} ms LATE)`;
-      dom.timingVerdictBadge.style.backgroundColor =
-        'hsla(202, 78%, 56%, 0.16)';
-      dom.timingVerdictBadge.style.color = 'var(--accent-drag)';
-    }
+    dom.lastOffset.textContent = formatSignedMs(entry.feelDeltaMs);
+    dom.lastOffset.dataset.judgment = judgment;
+    dom.judgment.textContent = JUDGMENT_LABELS[judgment];
+    dom.judgment.dataset.judgment = judgment;
+    dom.readoutSub.textContent =
+      profile.pocketCenterMs === 0
+        ? describeFeelTarget()
+        : `${describeFeelTarget()} · grid ${formatSignedMs(entry.offsetMs)}`;
 
     if (entry.targetNote !== 'ANY') {
-      dom.targetNoteName.style.color = entry.noteMatched
-        ? 'var(--accent-pocket)'
-        : 'var(--accent-miss)';
-    } else {
-      dom.targetNoteName.style.color = 'var(--accent-amber)';
+      dom.targetNote.classList.toggle('is-match', entry.noteMatched);
+      dom.targetNote.classList.toggle('is-miss', !entry.noteMatched);
     }
+
+    streak.record(entry.inPocket && entry.noteMatched);
+    sessionOffsetsMs.push(entry.offsetMs);
+    if (sessionOffsetsMs.length > SESSION_HISTORY_LIMIT) {
+      sessionOffsetsMs.shift();
+    }
+
+    const history = stepFeelHistory.get(key) ?? [];
+    history.push(entry.feelDeltaMs);
+    stepFeelHistory.set(key, history.slice(-STEP_HEAT_WINDOW));
+
+    const stepIndex = laneSteps.findIndex(
+      (s) => s.beatInBar === t.beatInBar && s.subIndex === t.subIndex,
+    );
+    if (stepIndex >= 0) {
+      lane.recordHit(stepIndex, judgment);
+      lane.setHeat(
+        laneSteps.map((s) => {
+          const h = stepFeelHistory.get(stepKeyOf(s.beatInBar, s.subIndex));
+          return h && h.length >= HEAT_MIN_HITS ? h.reduce((a, v) => a + v, 0) / h.length : null;
+        }),
+      );
+    }
+    pocketMeter.addHit({ offsetMs: entry.offsetMs, judgment });
+
+    if (isRoundActive) {
+      roundHits.push({
+        stepKey: key,
+        stepName: formatStepName(t.beatInBar, t.subIndex, subdivision),
+        offsetMs: entry.offsetMs,
+        feelDeltaMs: entry.feelDeltaMs,
+        inPocket: entry.inPocket,
+        noteMatched: entry.noteMatched,
+      });
+    }
+
+    renderGrooveMeter();
+    renderSessionStats();
   }
 
-  function renderPocketScopePips(): void {
-    dom.hitMarkersLayer.replaceChildren();
-    const recent = grader.getHistory().slice(0, 12);
-
-    recent.forEach((item, idx) => {
-      const pip = document.createElement('div');
-      pip.className = idx === 0 ? 'hit-pip latest' : 'hit-pip';
-
-      const clamped = Math.max(
-        -MAX_SCOPE_MS,
-        Math.min(MAX_SCOPE_MS, item.offsetMs),
-      );
-      const leftPct = 50 + (clamped / MAX_SCOPE_MS) * 50;
-      pip.style.left = `${leftPct.toFixed(2)}%`;
-
-      if (item.inPocket) {
-        pip.style.backgroundColor = 'var(--accent-pocket)';
-      } else if (item.verdict === 'rushing') {
-        pip.style.backgroundColor = 'var(--accent-rush)';
-      } else {
-        pip.style.backgroundColor = 'var(--accent-drag)';
-      }
-
-      const opacity = Math.max(0.2, 1 - idx * 0.075);
-      pip.style.opacity = opacity.toFixed(2);
-      dom.hitMarkersLayer.appendChild(pip);
-    });
+  function renderGrooveMeter(): void {
+    const reading = computeGrooveMeter(sessionOffsetsMs);
+    if (reading.tier === null || reading.sigmaMs === null) {
+      dom.grooveTier.textContent = '—';
+      delete dom.grooveTier.dataset.tier;
+      dom.grooveFill.style.width = '0%';
+      dom.grooveSigma.textContent = 'σ — ms';
+    } else {
+      dom.grooveTier.textContent = GROOVE_TIER_LABELS[reading.tier];
+      dom.grooveTier.dataset.tier = reading.tier;
+      dom.grooveFill.style.width = `${(reading.fill * 100).toFixed(0)}%`;
+      dom.grooveFill.style.backgroundColor = getComputedStyle(dom.grooveTier).color;
+      dom.grooveSigma.textContent = `σ ${reading.sigmaMs.toFixed(1)} ms`;
+    }
+    dom.streakCurrent.textContent = String(streak.current);
+    dom.streakBest.textContent = String(streak.best);
   }
 
   function renderSessionStats(): void {
-    const stats = grader.getStats(
-      profile.pocketWindowMs,
-      profile.pocketCenterMs,
-    );
-    dom.statTotalHits.textContent = String(stats.totalHits);
-
-    if (
-      stats.totalHits === 0 ||
-      stats.inPocketPct === null ||
-      stats.meanOffsetMs === null ||
-      stats.stdDevMs === null
-    ) {
-      dom.statPocketPct.textContent = '--%';
-      dom.statMeanMs.textContent = '-- ms';
-      dom.statJitterMs.textContent = '-- ms';
-      dom.noteHitRatio.textContent = 'Note Match: --';
+    const stats = grader.getStats(profile.pocketWindowMs, profile.pocketCenterMs);
+    dom.statCount.textContent = String(stats.totalHits);
+    if (stats.inPocketPct === null || stats.meanOffsetMs === null || stats.stdDevMs === null) {
+      dom.statPocket.textContent = '—';
+      dom.statMean.textContent = '—';
+      dom.statSigma.textContent = '—';
+      dom.statNotes.textContent = '—';
       return;
     }
-
-    dom.statPocketPct.textContent = `${stats.inPocketPct}%`;
-    const meanSign = stats.meanOffsetMs >= 0 ? '+' : '';
-    dom.statMeanMs.textContent = `${meanSign}${stats.meanOffsetMs.toFixed(1)} ms`;
-    dom.statJitterMs.textContent = `±${stats.stdDevMs.toFixed(1)} ms`;
-
-    if (stats.noteAttempts > 0) {
-      const notePct = Math.round(
-        (stats.noteMatches / stats.noteAttempts) * 100,
-      );
-      dom.noteHitRatio.textContent = `Note Match: ${stats.noteMatches}/${stats.noteAttempts} (${notePct}%)`;
-    } else {
-      dom.noteHitRatio.textContent = 'Note Match: Free Mode';
-    }
+    dom.statPocket.textContent = `${stats.inPocketPct}%`;
+    dom.statMean.textContent = formatSignedMs(stats.meanOffsetMs - profile.pocketCenterMs);
+    dom.statSigma.textContent = `${stats.stdDevMs.toFixed(1)} ms`;
+    dom.statNotes.textContent =
+      stats.noteAttempts > 0
+        ? `${Math.round((stats.noteMatches / stats.noteAttempts) * 100)}%`
+        : 'Free';
   }
 
-  function renderHistoryRows(): void {
-    dom.historyRowsBody.replaceChildren();
-    const history = grader.getHistory();
-
-    if (history.length === 0) {
-      const empty = document.createElement('div');
-      empty.className = 'history-empty';
-      empty.textContent =
-        'Enable Scarlett input and start the click to log your notes.';
-      dom.historyRowsBody.appendChild(empty);
-      return;
-    }
-
-    history.forEach((entry) => {
-      const row = document.createElement('div');
-      row.className = 'history-row';
-
-      const cBeat = document.createElement('span');
-      cBeat.textContent = entry.beatLabel;
-
-      const cNote = document.createElement('span');
-      cNote.textContent = entry.noteLabel;
-      if (entry.targetNote !== 'ANY' && !entry.noteMatched) {
-        cNote.style.color = 'var(--accent-miss)';
-      }
-
-      const cOffset = document.createElement('span');
-      const sign = entry.offsetMs >= 0 ? '+' : '';
-      cOffset.textContent = `${sign}${entry.offsetMs.toFixed(1)} ms`;
-      cOffset.style.color = entry.inPocket
-        ? 'var(--accent-pocket)'
-        : entry.verdict === 'rushing'
-          ? 'var(--accent-rush)'
-          : 'var(--accent-drag)';
-
-      const cVerdict = document.createElement('span');
-      if (entry.targetNote !== 'ANY' && !entry.noteMatched) {
-        cVerdict.textContent = `Wrong Pitch (Want ${entry.targetNote})`;
-        cVerdict.style.color = 'var(--accent-miss)';
-      } else if (entry.inPocket) {
-        cVerdict.textContent = 'Locked in Pocket';
-        cVerdict.style.color = 'var(--accent-pocket)';
-      } else if (entry.verdict === 'rushing') {
-        cVerdict.textContent = 'Rushing';
-        cVerdict.style.color = 'var(--accent-rush)';
-      } else {
-        cVerdict.textContent = 'Dragging';
-        cVerdict.style.color = 'var(--accent-drag)';
-      }
-
-      row.appendChild(cBeat);
-      row.appendChild(cNote);
-      row.appendChild(cOffset);
-      row.appendChild(cVerdict);
-      dom.historyRowsBody.appendChild(row);
-    });
-  }
-
-  function clearTransportLamps(): void {
-    dom.beatLamps.forEach((lamp) => {
-      lamp.className = 'beat-lamp';
-    });
-    patternCellElements.forEach((cell) => {
-      cell.classList.remove('playhead-current');
-    });
-  }
-
-  function syncBassLineButtonUI(): void {
-    if (profile.bassGuideMode === 'off') {
-      dom.previewPatternBtn.textContent = 'Bass Line: OFF';
-      dom.previewPatternBtn.classList.remove('btn-active-run');
-    } else if (profile.bassGuideMode === 'call-response-1-1') {
-      dom.previewPatternBtn.textContent = 'Bass Line: ON (1:1)';
-      dom.previewPatternBtn.classList.add('btn-active-run');
-    } else if (profile.bassGuideMode === 'call-response-1-3') {
-      dom.previewPatternBtn.textContent = 'Bass Line: ON (1:3)';
-      dom.previewPatternBtn.classList.add('btn-active-run');
-    } else {
-      dom.previewPatternBtn.textContent = 'Bass Line: ON';
-      dom.previewPatternBtn.classList.add('btn-active-run');
-    }
-  }
-
-  function toggleMetronomeUI(): void {
-    if (engine.isMetronomeRunning()) {
-      engine.stopMetronome();
-      dom.toggleMetronomeBtn.textContent = 'Start Click (Space)';
-      dom.toggleMetronomeBtn.classList.remove('btn-active-run');
-      clearTransportLamps();
-    } else {
-      if (!engine.isInputConnected()) {
-        void connectAudioInterface(
-          dom.deviceSelect.value || profile.selectedDeviceId,
-        );
-      }
-      grader.clearTimeline();
-      engine.startMetronome();
-      dom.toggleMetronomeBtn.textContent = 'Stop Click (Space)';
-      dom.toggleMetronomeBtn.classList.add('btn-active-run');
-    }
-  }
-
-  function resetSessionStats(): void {
+  function resetSession(): void {
     grader.resetStats();
-    dom.lastOffsetMs.textContent = '-- ms';
-    dom.lastOffsetMs.style.color = 'var(--text-primary)';
-    dom.timingVerdictBadge.textContent = 'Waiting for pluck...';
-    dom.timingVerdictBadge.style.backgroundColor = 'var(--bg-control)';
-    dom.timingVerdictBadge.style.color = 'var(--text-secondary)';
-    dom.hitMarkersLayer.replaceChildren();
+    streak.reset();
+    sessionOffsetsMs = [];
+    stepFeelHistory = new Map();
+    lane.resetHits();
+    pocketMeter.clear();
+    dom.lastOffset.textContent = '—';
+    delete dom.lastOffset.dataset.judgment;
+    dom.judgment.textContent = 'Waiting';
+    delete dom.judgment.dataset.judgment;
+    dom.readoutSub.textContent = describeFeelTarget();
+    renderGrooveMeter();
     renderSessionStats();
-    renderHistoryRows();
   }
+
+  // ---------------------------------------------------------------------------
+  // Calibration
+  // ---------------------------------------------------------------------------
 
   function startTapCalibration(): void {
     isLoopbackPinging = false;
     engine.stopLoopbackPingTest();
+    if (engine.isMetronomeRunning()) {
+      stopPlaying();
+    }
     isCalibrating = true;
     calibrationOffsetsMs = [];
-    dom.calibrationBanner.classList.add('visible');
-    dom.calibrationPromptText.textContent =
-      'TAP CALIBRATION: Pluck right on every quarter-note click (0 / 8 hits recorded)...';
-    if (!engine.isMetronomeRunning()) {
-      toggleMetronomeUI();
-    }
+    dom.calibrationStatus.textContent = 'Pluck right on every click… (0 / 8)';
+    void startPlaying();
   }
 
-  function stopCalibration(): void {
+  function finishCalibration(message: string): void {
     isCalibrating = false;
-    isLoopbackPinging = false;
-    engine.stopLoopbackPingTest();
-    dom.calibrationBanner.classList.remove('visible');
+    dom.calibrationStatus.textContent = message;
+    if (engine.isMetronomeRunning()) {
+      stopPlaying();
+    }
   }
 
   function recordCalibrationHit(rawOnsetTimeSec: number): void {
@@ -776,38 +1013,25 @@ function bootstrapGrooveLock(): void {
     if (!match || Math.abs(match.offsetMs) > 160) {
       return;
     }
-
     calibrationOffsetsMs.push(match.offsetMs);
-    dom.calibrationPromptText.textContent = `TAP CALIBRATION: Pluck right on every quarter-note click (${calibrationOffsetsMs.length} / 8 hits recorded)...`;
-
+    dom.calibrationStatus.textContent = `Pluck right on every click… (${calibrationOffsetsMs.length} / 8)`;
     if (calibrationOffsetsMs.length >= 8) {
-      const sorted = [...calibrationOffsetsMs].sort((a, b) => a - b);
-      const trimmed = sorted.slice(1, -1);
-      const avgMs = Math.round(
-        trimmed.reduce((acc, v) => acc + v, 0) / trimmed.length,
-      );
+      const trimmed = [...calibrationOffsetsMs].sort((a, b) => a - b).slice(1, -1);
+      const avgMs = Math.round(trimmed.reduce((a, v) => a + v, 0) / trimmed.length);
       const clampedMs = Math.max(-20, Math.min(85, avgMs));
-
-      profile.latencyCompensationMs = clampedMs;
-      persistCurrentProfile();
-
-      dom.latencySlider.value = String(clampedMs);
-      dom.latencyValueLabel.textContent = `${clampedMs} ms`;
-      dom.calibrationPromptText.textContent = `TAP CALIBRATED: Input latency compensation set to ${clampedMs} ms.`;
-      isCalibrating = false;
+      setLatency(clampedMs);
+      finishCalibration(`Calibrated: latency compensation set to ${clampedMs} ms.`);
     }
   }
 
-  function startLoopbackPingTestUI(): void {
+  function startLoopbackPing(): void {
     isCalibrating = false;
     isLoopbackPinging = true;
-    dom.calibrationBanner.classList.add('visible');
-    dom.calibrationPromptText.textContent =
-      'LOOPBACK PING: Connect patch cable from Scarlett Line Out -> Input, or hold bass pickup to speaker (measuring 6 pings)...';
-
     if (engine.isMetronomeRunning()) {
-      toggleMetronomeUI();
+      stopPlaying();
     }
+    dom.calibrationStatus.textContent =
+      'Measuring 6 pings… patch Line Out → Input, or hold the pickup near the speaker.';
     engine.startLoopbackPingTest();
   }
 
@@ -816,222 +1040,171 @@ function bootstrapGrooveLock(): void {
       return;
     }
     isLoopbackPinging = false;
-
     if (!summary.success || summary.medianRtlMs === null) {
-      dom.calibrationPromptText.textContent =
-        'LOOPBACK FAILED: No return pings detected. Turn up Output/Gain or lower Pluck Sensitivity Threshold and retry.';
+      dom.calibrationStatus.textContent =
+        'No return pings detected. Turn up output/gain or lower the sensitivity threshold.';
       return;
     }
-
-    const clampedMs = Math.max(
-      -20,
-      Math.min(85, Math.round(summary.medianRtlMs)),
-    );
-    profile.latencyCompensationMs = clampedMs;
-    persistCurrentProfile();
-
-    dom.latencySlider.value = String(clampedMs);
-    dom.latencyValueLabel.textContent = `${clampedMs} ms`;
-    dom.calibrationPromptText.textContent = `LOOPBACK COMPLETE (${summary.detectedCount}/${summary.totalPulses} pings): Round-trip hardware latency = ${clampedMs} ms (applied!).`;
+    const clampedMs = Math.max(-20, Math.min(85, Math.round(summary.medianRtlMs)));
+    setLatency(clampedMs);
+    dom.calibrationStatus.textContent = `Round-trip latency ${clampedMs} ms (${summary.detectedCount}/${summary.totalPulses} pings) — applied.`;
   }
 
-  // Wire up event listeners
-  dom.connectAudioBtn.addEventListener('click', () => {
-    void connectAudioInterface(
-      dom.deviceSelect.value || profile.selectedDeviceId,
-    );
-  });
+  // ---------------------------------------------------------------------------
+  // Wiring
+  // ---------------------------------------------------------------------------
 
-  dom.deviceSelect.addEventListener('change', () => {
-    profile.selectedDeviceId = dom.deviceSelect.value;
-    persistCurrentProfile();
-    void connectAudioInterface(dom.deviceSelect.value);
-  });
+  function syncBassLineButton(): void {
+    const on = profile.bassGuideMode !== 'off';
+    dom.bassLineBtn.setAttribute('aria-pressed', String(on));
+    const labels: Record<BassGuideMode, string> = {
+      off: 'Bass line: Off',
+      always: 'Bass line: Along',
+      'demo-first': 'Bass line: Demo first',
+      'call-response-1-1': 'Bass line: Echo 1:1',
+      'call-response-1-3': 'Bass line: Echo 1:3',
+    };
+    dom.bassLineBtn.textContent = labels[profile.bassGuideMode];
+  }
 
-  dom.outputDeviceSelect.addEventListener('change', () => {
-    profile.selectedOutputDeviceId = dom.outputDeviceSelect.value;
-    persistCurrentProfile();
-    void applyOutputSinkSelection(dom.outputDeviceSelect.value, true);
-  });
+  dom.playBtn.addEventListener('click', togglePlay);
+  dom.bpmDown.addEventListener('click', () => setBpm(profile.bpm - 1));
+  dom.bpmUp.addEventListener('click', () => setBpm(profile.bpm + 1));
+  dom.tapBtn.addEventListener('click', handleTap);
+  dom.exerciseChip.addEventListener('click', () => drawers.toggle(dom.exerciseDrawer, dom.exerciseChip));
+  dom.setupChip.addEventListener('click', () => drawers.toggle(dom.setupDrawer, dom.setupChip));
+  dom.resNext.addEventListener('click', () => void startPlaying());
+  dom.resStay.addEventListener('click', stayAfterRound);
 
-  dom.channelSelect.addEventListener('change', () => {
-    profile.selectedChannel = dom.channelSelect.value as InputChannelMode;
-    persistCurrentProfile();
-    engine.setDspConfig({ channelMode: profile.selectedChannel });
-  });
-
-  dom.thresholdSlider.addEventListener('input', () => {
-    profile.onsetThreshold = parseFloat(dom.thresholdSlider.value);
-    persistCurrentProfile();
-    updateThresholdMarkerPosition();
-    engine.setDspConfig({ onsetThreshold: profile.onsetThreshold });
-  });
-
-  dom.latencySlider.addEventListener('input', () => {
-    profile.latencyCompensationMs = parseInt(dom.latencySlider.value, 10);
-    persistCurrentProfile();
-    dom.latencyValueLabel.textContent = `${profile.latencyCompensationMs} ms`;
-  });
-
-  dom.bpmInput.addEventListener('input', () => {
-    profile.bpm = parseInt(dom.bpmInput.value, 10);
-    persistCurrentProfile();
-    dom.bpmDisplayVal.textContent = String(profile.bpm);
-    engine.setTransportConfig({ bpm: profile.bpm });
-    updateGridSummaryText();
+  dom.bassLineBtn.addEventListener('click', () => {
+    const value: BassGuideMode = profile.bassGuideMode === 'off' ? 'always' : 'off';
+    segmented.get('bassGuideMode')?.set(value);
+    onSettingChanged('bassGuideMode', value);
   });
 
   dom.groovePatternSelect.addEventListener('change', () => {
     profile.groovePattern = dom.groovePatternSelect.value as GroovePatternId;
-    persistCurrentProfile();
     grader.clearTimeline();
     engine.setTransportConfig({ groovePattern: profile.groovePattern });
-    updateGridSummaryText();
-    renderPatternStepsStrip();
-  });
-
-  dom.subdivisionSelect.addEventListener('change', () => {
-    profile.subdivision = parseInt(
-      dom.subdivisionSelect.value,
-      10,
-    ) as Subdivision;
-    persistCurrentProfile();
-    grader.clearTimeline();
-    engine.setTransportConfig({ subdivision: profile.subdivision });
-    updateGridSummaryText();
-    renderPatternStepsStrip();
-  });
-
-  dom.soundModeSelect.addEventListener('change', () => {
-    profile.soundMode = dom.soundModeSelect.value as SoundEngineMode;
-    persistCurrentProfile();
-    engine.setTransportConfig({ soundMode: profile.soundMode });
-  });
-
-  dom.bassGuideSelect.addEventListener('change', () => {
-    profile.bassGuideMode = dom.bassGuideSelect.value as BassGuideMode;
-    persistCurrentProfile();
-    engine.setTransportConfig({ bassGuideMode: profile.bassGuideMode });
-    syncBassLineButtonUI();
-    updateTargetNoteDisplay(engine.getCurrentBarNumber());
-  });
-
-  dom.clickPlacementSelect.addEventListener('change', () => {
-    profile.clickPlacement = dom.clickPlacementSelect
-      .value as ClickPlacementMode;
-    persistCurrentProfile();
-    engine.setTransportConfig({ clickPlacement: profile.clickPlacement });
-  });
-
-  dom.pocketFeelSelect.addEventListener('change', () => {
-    profile.pocketCenterMs = parseInt(
-      dom.pocketFeelSelect.value,
-      10,
-    ) as PocketFeelOffsetMs;
-    persistCurrentProfile();
-    engine.setTransportConfig({ pocketCenterMs: profile.pocketCenterMs });
-    updatePocketZoneVisual();
-    renderSessionStats();
-  });
-
-  dom.pocketWindowSelect.addEventListener('change', () => {
-    profile.pocketWindowMs = parseInt(dom.pocketWindowSelect.value, 10);
-    persistCurrentProfile();
-    updatePocketZoneVisual();
-    renderSessionStats();
-  });
-
-  dom.gapModeSelect.addEventListener('change', () => {
-    profile.gapBars = parseInt(dom.gapModeSelect.value, 10) as GapClickMode;
-    persistCurrentProfile();
-    engine.setTransportConfig({ gapBars: profile.gapBars });
-  });
-
-  dom.speedTrainerSelect.addEventListener('change', () => {
-    profile.speedTrainerStep = parseInt(
-      dom.speedTrainerSelect.value,
-      10,
-    ) as SpeedTrainerStep;
-    persistCurrentProfile();
-    grader.resetSpeedTrainerWindow();
+    rebuildLane();
+    persist();
+    updateExerciseSummary();
   });
 
   dom.drillModeSelect.addEventListener('change', () => {
     profile.drillMode = dom.drillModeSelect.value as DrillMode;
-    persistCurrentProfile();
     engine.setTransportConfig({ drillMode: profile.drillMode });
-    updateTargetNoteDisplay(engine.getCurrentBarNumber());
-    updatePatternStepNoteLabels(currentBarExpectedNote);
+    updateTargetDisplay(engine.getCurrentBarNumber());
+    persist();
+    updateExerciseSummary();
   });
 
-  dom.instrumentRangeSelect.addEventListener('change', () => {
-    profile.instrumentRange = dom.instrumentRangeSelect
-      .value as InstrumentRange;
-    persistCurrentProfile();
-    engine.setDspConfig({ instrumentRange: profile.instrumentRange });
-    updateTargetNoteDisplay(engine.getCurrentBarNumber());
-    updatePatternStepNoteLabels(currentBarExpectedNote);
+  dom.connectAudioBtn.addEventListener('click', () => {
+    void connectAudioInterface(dom.deviceSelect.value || profile.selectedDeviceId);
   });
-
-  dom.previewPatternBtn.addEventListener('click', () => {
-    const turningOn = profile.bassGuideMode === 'off';
-    profile.bassGuideMode = turningOn ? 'always' : 'off';
-    dom.bassGuideSelect.value = profile.bassGuideMode;
-    persistCurrentProfile();
-    engine.setTransportConfig({ bassGuideMode: profile.bassGuideMode });
-    syncBassLineButtonUI();
-    updateTargetNoteDisplay(engine.getCurrentBarNumber());
-
-    if (turningOn && !engine.isMetronomeRunning()) {
-      toggleMetronomeUI();
-    } else if (!engine.isInputConnected()) {
-      void connectAudioInterface(
-        dom.deviceSelect.value || profile.selectedDeviceId,
-      );
-    }
+  dom.deviceSelect.addEventListener('change', () => {
+    profile.selectedDeviceId = dom.deviceSelect.value;
+    persist();
+    void connectAudioInterface(dom.deviceSelect.value);
   });
-
-  dom.toggleMetronomeBtn.addEventListener('click', () => {
-    toggleMetronomeUI();
+  dom.outputDeviceSelect.addEventListener('change', () => {
+    profile.selectedOutputDeviceId = dom.outputDeviceSelect.value;
+    persist();
+    void applyOutputSinkSelection(dom.outputDeviceSelect.value, true);
   });
-
-  dom.resetStatsBtn.addEventListener('click', () => {
-    resetSessionStats();
+  dom.channelSelect.addEventListener('change', () => {
+    profile.selectedChannel = dom.channelSelect.value as InputChannelMode;
+    persist();
+    engine.setDspConfig({ channelMode: profile.selectedChannel });
   });
-
-  dom.loopbackPingBtn.addEventListener('click', () => {
-    startLoopbackPingTestUI();
+  dom.thresholdSlider.addEventListener('input', () => {
+    profile.onsetThreshold = parseFloat(dom.thresholdSlider.value);
+    persist();
+    updateThresholdMarkers();
+    engine.setDspConfig({ onsetThreshold: profile.onsetThreshold });
   });
-
-  dom.calibrateBtn.addEventListener('click', () => {
-    startTapCalibration();
+  dom.latencySlider.addEventListener('input', () => {
+    setLatency(parseInt(dom.latencySlider.value, 10));
   });
+  dom.loopbackPingBtn.addEventListener('click', startLoopbackPing);
+  dom.calibrateBtn.addEventListener('click', startTapCalibration);
 
-  dom.cancelCalibrateBtn.addEventListener('click', () => {
-    stopCalibration();
-  });
+  function isTypingTarget(el: HTMLElement | null): boolean {
+    const tag = el?.tagName;
+    return tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA';
+  }
 
   window.addEventListener('keydown', (e: KeyboardEvent) => {
-    const tag = (e.target as HTMLElement | null)?.tagName;
-    if (tag === 'INPUT' || tag === 'SELECT') {
+    if (e.metaKey || e.ctrlKey || e.altKey) {
       return;
     }
-    if (e.code === 'Space' && !dom.toggleMetronomeBtn.disabled) {
+    const target = e.target as HTMLElement | null;
+    if (e.key === 'Escape') {
+      if (drawers.isOpen()) {
+        drawers.close();
+      } else if (!dom.results.hidden) {
+        stayAfterRound();
+      }
+      return;
+    }
+    if (isTypingTarget(target) || drawers.isOpen()) {
+      return;
+    }
+    const onButton = target?.tagName === 'BUTTON';
+    switch (e.code) {
+      case 'Space':
+        e.preventDefault();
+        if (e.repeat) return;
+        if (!dom.results.hidden) {
+          void startPlaying();
+        } else {
+          togglePlay();
+        }
+        break;
+      case 'Enter':
+      case 'NumpadEnter':
+        if (!onButton && !dom.results.hidden) {
+          e.preventDefault();
+          void startPlaying();
+        }
+        break;
+      case 'ArrowUp':
+        e.preventDefault();
+        setBpm(profile.bpm + (e.shiftKey ? 5 : 1));
+        break;
+      case 'ArrowDown':
+        e.preventDefault();
+        setBpm(profile.bpm - (e.shiftKey ? 5 : 1));
+        break;
+      case 'KeyT':
+        handleTap();
+        break;
+      case 'KeyR':
+        resetSession();
+        break;
+      case 'KeyE':
+        e.preventDefault();
+        drawers.open(dom.exerciseDrawer, dom.exerciseChip);
+        break;
+      case 'KeyS':
+        e.preventDefault();
+        drawers.open(dom.setupDrawer, dom.setupChip);
+        break;
+    }
+  });
+
+  // Space on a focused button would otherwise also "click" it on keyup.
+  window.addEventListener('keyup', (e: KeyboardEvent) => {
+    const target = e.target as HTMLElement | null;
+    if (e.code === 'Space' && target?.tagName === 'BUTTON' && !drawers.isOpen()) {
       e.preventDefault();
-      toggleMetronomeUI();
-    } else if (e.code === 'KeyR') {
-      e.preventDefault();
-      resetSessionStats();
     }
   });
 
   if (navigator.mediaDevices?.addEventListener) {
     navigator.mediaDevices.addEventListener('devicechange', () => {
       void engine
-        .enumerateAndResolveDevices(
-          profile.selectedDeviceId,
-          profile.selectedOutputDeviceId,
-        )
+        .enumerateAndResolveDevices(profile.selectedDeviceId, profile.selectedOutputDeviceId)
         .then((lists) => {
           populateDeviceDropdowns(
             lists.inputs,
@@ -1043,7 +1216,55 @@ function bootstrapGrooveLock(): void {
     });
   }
 
-  applyProfileToUiAndEngine();
+  // ---------------------------------------------------------------------------
+  // Initial state
+  // ---------------------------------------------------------------------------
+
+  dom.bpmValue.textContent = String(profile.bpm);
+  dom.groovePatternSelect.value = profile.groovePattern;
+  dom.drillModeSelect.value = profile.drillMode;
+  dom.channelSelect.value = profile.selectedChannel;
+  dom.thresholdSlider.value = String(profile.onsetThreshold);
+  setLatency(profile.latencyCompensationMs);
+  updateThresholdMarkers();
+  syncSegmentedFromProfile();
+  syncBassLineButton();
+
+  engine.setDspConfig({
+    channelMode: profile.selectedChannel,
+    onsetThreshold: profile.onsetThreshold,
+    instrumentRange: profile.instrumentRange,
+  });
+  engine.setTransportConfig({
+    bpm: profile.bpm,
+    subdivision: profile.subdivision,
+    groovePattern: profile.groovePattern,
+    soundMode: profile.soundMode,
+    bassGuideMode: profile.bassGuideMode,
+    clickPlacement: profile.clickPlacement,
+    pocketCenterMs: profile.pocketCenterMs,
+    gapBars: profile.gapBars,
+    drillMode: profile.drillMode,
+    roundBars: effectiveRoundBars(),
+    countInBars: 1,
+  });
+
+  rebuildLane();
+  lane.setGuide(profile.visualGuide);
+  applyPocketSettings();
+  updateTargetDisplay(0);
+  updateExerciseSummary();
+  updateBassGuideHelp();
+  setBarCounterIdle();
+  setPhaseTag('ready');
+  renderGrooveMeter();
+  renderSessionStats();
+  if (isDemo) {
+    dom.audioStatusText.textContent = 'Demo mode';
+    dom.audioLed.className = 'led-dot warn';
+    showOverlay('Demo — press Space to play', 'Simulated plucks, no instrument needed.');
+  }
+  lane.start();
 }
 
 bootstrapGrooveLock();

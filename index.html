@@ -3,419 +3,378 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>GrooveLock — Studio Rhythm &amp; Pitch Trainer for Bass and Guitar</title>
-  <meta name="description" content="Low-latency HTML5 Web Audio practice tool for Focusrite Scarlett Solo. Train micro-timing pocket accuracy and pitch precision on bass and guitar.">
+  <title>GrooveLock — Bass Timing Trainer</title>
+  <meta name="description" content="Low-latency Web Audio practice tool for bass players. Lock into the pocket with measurable micro-timing feedback.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
 </head>
 <body>
-  <div class="rack-shell">
-    <!-- Top Rack Header -->
-    <header class="rack-header">
-      <div class="brand-group">
-        <h1>GrooveLock</h1>
-        <span class="brand-model">MK-I · Scarlett Hi-Z Rhythm &amp; Pitch Analyzer</span>
+  <div class="app">
+    <!-- Transport -->
+    <header class="transport">
+      <div class="brand">Groove<span>Lock</span></div>
+
+      <button type="button" class="play-btn" id="play-btn" aria-keyshortcuts="Space">
+        <span class="play-icon" aria-hidden="true">▶</span>
+        <span class="play-label" id="play-label">Play</span>
+        <kbd>Space</kbd>
+      </button>
+
+      <div class="tempo" role="group" aria-label="Tempo">
+        <button type="button" class="icon-btn" id="bpm-down" aria-label="Slower (Down arrow)">−</button>
+        <div class="tempo-readout" aria-live="polite">
+          <span class="tempo-value" id="bpm-value">90</span>
+          <span class="tempo-unit">BPM</span>
+        </div>
+        <button type="button" class="icon-btn" id="bpm-up" aria-label="Faster (Up arrow)">+</button>
+        <button type="button" class="chip-btn" id="tap-btn" aria-keyshortcuts="T">Tap <kbd>T</kbd></button>
       </div>
 
-      <div class="status-strip">
-        <div class="status-indicator" id="audio-status-pill">
-          <span class="led-dot" id="audio-led"></span>
-          <span id="audio-status-text">Audio Standby</span>
-        </div>
-        <button type="button" class="btn btn-primary" id="connect-audio-btn">
-          Enable Scarlett Input
-        </button>
-        <button type="button" class="btn" id="toggle-metronome-btn">
-          Start Click (Space)
-        </button>
-        <button type="button" class="btn" id="loopback-ping-btn" disabled>
-          Auto-Ping Loopback
-        </button>
-        <button type="button" class="btn" id="calibrate-btn" disabled>
-          Tap Calibrate
-        </button>
-        <button type="button" class="btn" id="reset-stats-btn">
-          Clear Stats
-        </button>
-      </div>
+      <button type="button" class="exercise-chip" id="exercise-chip" aria-keyshortcuts="E" aria-controls="exercise-drawer">
+        <span class="chip-caption">Exercise</span>
+        <span class="chip-value" id="exercise-summary">Quarter notes</span>
+        <span class="chip-edit" aria-hidden="true">✎</span>
+      </button>
+
+      <button type="button" class="status-chip" id="setup-chip" aria-keyshortcuts="S" aria-controls="setup-drawer">
+        <span class="led-dot" id="audio-led"></span>
+        <span id="audio-status-text">Audio off</span>
+        <span class="chip-edit" aria-hidden="true">⚙</span>
+      </button>
     </header>
 
-    <!-- Calibration Active Banner -->
-    <div class="calibration-banner" id="calibration-banner" role="status" aria-live="polite">
-      <span id="calibration-prompt-text">
-        CALIBRATION MODE: Pluck cleanly on every quarter-note click (0 / 8 hits recorded)...
-      </span>
-      <button type="button" class="btn" id="cancel-calibrate-btn">Close</button>
-    </div>
-
-    <!-- Scarlett Solo Hardware I/O Strip -->
-    <section class="io-strip" aria-label="Audio Interface Configuration">
-      <div class="control-field">
-        <label class="field-label" for="audio-device-select">
-          <span>Audio Input Device</span>
-          <span class="field-value" id="sample-rate-label">-- kHz</span>
-        </label>
-        <select id="audio-device-select">
-          <option value="">Click "Enable Scarlett Input" first...</option>
-        </select>
+    <!-- Timeline lane -->
+    <section class="lane-panel" aria-label="Timeline">
+      <div class="lane-header">
+        <span class="phase-tag" id="phase-tag">Ready</span>
+        <span class="lane-bar" id="bar-counter">8-bar rounds</span>
+        <span class="lane-spacer"></span>
+        <span class="lane-hint">Blocks show your average timing per note</span>
+        <span class="lane-target" id="lane-target">Any note</span>
+        <button type="button" class="chip-btn" id="bass-line-btn" aria-pressed="false">Bass line: Off</button>
       </div>
-
-      <div class="control-field">
-        <label class="field-label" for="audio-output-select">
-          <span>Audio Output Device</span>
-          <span class="field-value" id="output-sink-status">System Default</span>
-        </label>
-        <select id="audio-output-select">
-          <option value="">System Default Output</option>
-        </select>
-      </div>
-
-      <div class="control-field">
-        <label class="field-label" for="input-channel-select">
-          <span>Scarlett Input Channel</span>
-        </label>
-        <select id="input-channel-select">
-          <option value="auto" selected>Auto (Strongest of IN 1 / IN 2)</option>
-          <option value="0">Input 1 (4th Gen Front 1/4" Inst)</option>
-          <option value="1">Input 2 (3rd Gen Front 1/4" Inst)</option>
-          <option value="sum">Input 1 + 2 (Mono Sum)</option>
-        </select>
-      </div>
-
-      <div class="control-field">
-        <div class="field-label">
-          <span>Live Channel Activity</span>
-          <span class="field-value" id="peak-db-readout">-∞ dB</span>
+      <div class="lane-canvas-wrap">
+        <canvas id="timeline-canvas" aria-hidden="true"></canvas>
+        <div class="lane-overlay" id="lane-overlay">
+          <div class="overlay-title" id="overlay-title">Press <kbd>Space</kbd> to play</div>
+          <div class="overlay-sub" id="overlay-sub">One bar count-in, then lock in.</div>
         </div>
-        <div class="channel-meters">
-          <div class="meter-row">
-            <span class="meter-label">IN 1</span>
-            <div class="meter-track">
-              <div class="meter-fill" id="meter-ch1"></div>
-              <div class="meter-threshold-marker" id="threshold-marker-1" style="left: 18%;"></div>
-            </div>
-          </div>
-          <div class="meter-row">
-            <span class="meter-label">IN 2</span>
-            <div class="meter-track">
-              <div class="meter-fill" id="meter-ch2"></div>
-              <div class="meter-threshold-marker" id="threshold-marker" style="left: 18%;"></div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div class="control-field">
-        <label class="field-label" for="onset-threshold-slider">
-          <span>Pluck Sensitivity Threshold</span>
-          <span class="field-value" id="threshold-value-label">0.035</span>
-        </label>
-        <input
-          type="range"
-          id="onset-threshold-slider"
-          min="0.008"
-          max="0.180"
-          step="0.002"
-          value="0.035"
-        >
-      </div>
-
-      <div class="control-field">
-        <label class="field-label" for="latency-offset-slider">
-          <span>Input Latency Compensation</span>
-          <span class="field-value" id="latency-value-label">18 ms</span>
-        </label>
-        <input
-          type="range"
-          id="latency-offset-slider"
-          min="-20"
-          max="85"
-          step="1"
-          value="18"
-        >
       </div>
     </section>
 
-    <!-- Main Studio Modules -->
-    <main class="main-grid">
-      <!-- Left Column: Metronome & Micro-Timing Pocket Scope -->
-      <section class="rack-module" aria-label="Rhythm and Pocket Analyzer">
-        <div class="module-header">
-          <span class="module-title">01 // Pocket Laboratory &amp; Micro-Timing Scope</span>
-          <span class="field-value" id="active-grid-summary">90 BPM · Quarter Notes</span>
+    <!-- Live feedback -->
+    <section class="feedback-row">
+      <div class="card readout-card" aria-live="polite">
+        <div class="card-title">Last note</div>
+        <div class="big-offset" id="last-offset">—</div>
+        <div class="judgment" id="judgment">Waiting</div>
+        <div class="readout-sub" id="readout-sub">vs. the grid</div>
+      </div>
+
+      <div class="card pocket-card">
+        <div class="card-title">Pocket meter <span class="card-hint">recent hits fade · grey = whole session</span></div>
+        <div class="canvas-box"><canvas id="pocket-canvas" aria-hidden="true"></canvas></div>
+      </div>
+
+      <div class="card groove-card">
+        <div class="card-title">Groove <span class="card-hint">consistency</span></div>
+        <div class="groove-tier" id="groove-tier">—</div>
+        <div class="groove-meter" aria-hidden="true"><div class="groove-fill" id="groove-fill"></div></div>
+        <div class="groove-sub">
+          <span id="groove-sigma">σ — ms</span>
+          <span>Streak <b id="streak-current">0</b> · best <b id="streak-best">0</b></span>
         </div>
+      </div>
+    </section>
 
-        <!-- Row 1: Tempo, Groove Pattern, Subdivision, Sound Mode -->
-        <div class="transport-row">
-          <div class="control-field">
-            <label class="field-label" for="bpm-input">
-              <span>Tempo (BPM)</span>
-              <span class="field-value" id="bpm-display-val">90</span>
-            </label>
-            <input type="range" id="bpm-input" min="40" max="200" step="1" value="90">
-          </div>
-
-          <div class="control-field">
-            <label class="field-label" for="groove-pattern-select">
-              <span>Groove Pattern</span>
-            </label>
-            <select id="groove-pattern-select">
-              <option value="uniform" selected>Uniform Grid (Subdivision)</option>
-              <option value="motown-pocket">Motown Pocket (1, 2-&amp;, 3, 4)</option>
-              <option value="funk-16th">Funk 16th Syncopation</option>
-              <option value="shuffle-swing">Swung 8th Shuffle (62%)</option>
-              <option value="octaves-8th">Driving 8th Pulse</option>
-            </select>
-          </div>
-
-          <div class="control-field">
-            <label class="field-label" for="subdivision-select">
-              <span>Subdivision</span>
-            </label>
-            <select id="subdivision-select">
-              <option value="1" selected>Quarter Notes (1 / beat)</option>
-              <option value="2">Eighth Notes (2 / beat)</option>
-              <option value="3">Triplets (3 / beat)</option>
-              <option value="4">Sixteenth Notes (4 / beat)</option>
-            </select>
-          </div>
-
-          <div class="control-field">
-            <label class="field-label" for="sound-mode-select">
-              <span>Reference Sound</span>
-            </label>
-            <select id="sound-mode-select">
-              <option value="click" selected>Studio Click (Pitched)</option>
-              <option value="drums">Studio Drum Kit (Kick/Snare/Hat)</option>
-            </select>
-          </div>
+    <!-- Notes & session metrics -->
+    <section class="bottom-row">
+      <div class="card note-card">
+        <div class="note-col">
+          <span class="mini-caption">Target</span>
+          <span class="note-big target" id="target-note">Any</span>
+          <span class="note-sub" id="target-sub">Free groove</span>
         </div>
-
-        <!-- Row 2: Click Placement, Pocket Feel, Pocket Tolerance, Gap Click, Speed Trainer -->
-        <div class="transport-row">
-          <div class="control-field">
-            <label class="field-label" for="click-placement-select">
-              <span>Click Placement</span>
-            </label>
-            <select id="click-placement-select">
-              <option value="all" selected>All 4 Beats</option>
-              <option value="backbeat-2-4">Backbeat Only (Beats 2 &amp; 4)</option>
-              <option value="one-drop-1">One-Drop (Beat 1 Only)</option>
-              <option value="offbeat-and">Off-Beat '&amp;' Only</option>
-            </select>
-          </div>
-
-          <div class="control-field">
-            <label class="field-label" for="pocket-feel-select">
-              <span>Pocket Feel Target</span>
-            </label>
-            <select id="pocket-feel-select">
-              <option value="0" selected>Dead Center (0 ms)</option>
-              <option value="12">Laid-Back / Behind (+12 ms)</option>
-              <option value="-8">Pushed / On Top (-8 ms)</option>
-            </select>
-          </div>
-
-          <div class="control-field">
-            <label class="field-label" for="pocket-window-select">
-              <span>Pocket Tolerance</span>
-            </label>
-            <select id="pocket-window-select">
-              <option value="10">Strict (±10 ms)</option>
-              <option value="16" selected>Studio Pocket (±16 ms)</option>
-              <option value="25">Relaxed (±25 ms)</option>
-            </select>
-          </div>
-
-          <div class="control-field">
-            <label class="field-label" for="gap-mode-select">
-              <span>Gap Click Trainer</span>
-            </label>
-            <select id="gap-mode-select">
-              <option value="0" selected>Continuous (4/4)</option>
-              <option value="1">3 Bars + 1 Silent</option>
-              <option value="2">2 Bars + 2 Silent</option>
-            </select>
-          </div>
-
-          <div class="control-field">
-            <label class="field-label" for="speed-trainer-select">
-              <span>Speed Trainer</span>
-            </label>
-            <select id="speed-trainer-select">
-              <option value="0" selected>Off (Fixed Tempo)</option>
-              <option value="2">+2 BPM / 4 Clean Bars</option>
-              <option value="4">+4 BPM / 4 Clean Bars</option>
-            </select>
-          </div>
-
-          <div class="control-field">
-            <label class="field-label" for="bass-guide-select">
-              <span>Reference Bass Guide</span>
-            </label>
-            <select id="bass-guide-select">
-              <option value="off" selected>Off (Click Only)</option>
-              <option value="call-response-1-1">Call &amp; Response (1 Demo / 1 You)</option>
-              <option value="call-response-1-3">Call &amp; Response (1 Demo / 3 You)</option>
-              <option value="always">Guide Bass Always On</option>
-            </select>
-          </div>
+        <div class="note-col">
+          <span class="mini-caption">You played</span>
+          <span class="note-big" id="detected-note">—</span>
+          <span class="note-sub" id="detected-sub">Pluck a string</span>
         </div>
-
-        <!-- 4-Beat Visual Lamps -->
-        <div class="beat-lamps" id="beat-lamps-container">
-          <div class="beat-lamp" id="beat-lamp-0">BEAT 1</div>
-          <div class="beat-lamp" id="beat-lamp-1">BEAT 2</div>
-          <div class="beat-lamp" id="beat-lamp-2">BEAT 3</div>
-          <div class="beat-lamp" id="beat-lamp-3">BEAT 4</div>
+        <div class="cents-col">
+          <div class="cents-track" aria-hidden="true">
+            <div class="cents-zone"></div>
+            <div class="cents-center"></div>
+            <div class="cents-needle" id="cents-needle"></div>
+          </div>
+          <div class="cents-scale"><span>♭ −50¢</span><span>0</span><span>+50¢ ♯</span></div>
         </div>
+      </div>
 
-        <!-- Bar Pattern Step Sequencer Indicator -->
-        <div class="pattern-strip-wrap">
-          <div class="pattern-strip-header">
-            <div class="field-label">
-              <span>Bar Target Pattern (Lit = Pluck · Dashed = Rest)</span>
-              <span class="field-value" id="pattern-step-count-label">4 Steps / Bar</span>
-            </div>
-            <button type="button" class="btn btn-sm" id="preview-pattern-btn">
-              Bass Line: OFF
-            </button>
-          </div>
-          <div class="pattern-steps-grid" id="pattern-steps-strip"></div>
-        </div>
+      <div class="metrics" aria-label="Session metrics">
+        <div class="metric"><span class="metric-label">In pocket</span><span class="metric-value" id="stat-pocket">—</span></div>
+        <div class="metric"><span class="metric-label">Tendency</span><span class="metric-value" id="stat-mean">—</span></div>
+        <div class="metric"><span class="metric-label">Spread <span class="sigma">σ</span></span><span class="metric-value" id="stat-sigma">—</span></div>
+        <div class="metric"><span class="metric-label">Notes</span><span class="metric-value" id="stat-count">0</span></div>
+        <div class="metric"><span class="metric-label">Right note</span><span class="metric-value" id="stat-notes">—</span></div>
+      </div>
+    </section>
 
-        <!-- Micro-Timing Scope -->
-        <div class="pocket-scope">
-          <div class="timing-readout-row">
-            <div>
-              <div class="note-box-caption">Last Pluck Timing Offset</div>
-              <div class="big-ms-readout" id="last-offset-ms">-- ms</div>
-            </div>
-            <span class="timing-verdict-tag" id="timing-verdict-badge">Waiting for pluck...</span>
-          </div>
-
-          <div>
-            <div class="pocket-ruler-wrap" id="pocket-ruler">
-              <div class="pocket-zone-highlight" id="pocket-zone-box"></div>
-              <div class="pocket-center-line" id="pocket-center-marker"></div>
-              <div class="hit-markers-layer" id="hit-markers-layer"></div>
-            </div>
-            <div class="ruler-scale-labels">
-              <span>-60 ms (RUSHING)</span>
-              <span>-30 ms</span>
-              <span>0 ms (GRID)</span>
-              <span>+30 ms</span>
-              <span>+60 ms (DRAGGING)</span>
-            </div>
-          </div>
-        </div>
-
-        <!-- Session Groove Metrics -->
-        <div class="stats-grid">
-          <div class="stat-tile">
-            <span class="stat-label">In-Pocket Rate</span>
-            <span class="stat-number" id="stat-pocket-pct">--%</span>
-          </div>
-          <div class="stat-tile">
-            <span class="stat-label">Mean Tendency</span>
-            <span class="stat-number" id="stat-mean-ms">-- ms</span>
-          </div>
-          <div class="stat-tile">
-            <span class="stat-label">Consistency (σ)</span>
-            <span class="stat-number" id="stat-jitter-ms">-- ms</span>
-          </div>
-          <div class="stat-tile">
-            <span class="stat-label">Notes Evaluated</span>
-            <span class="stat-number" id="stat-total-hits">0</span>
-          </div>
-        </div>
-      </section>
-
-      <!-- Right Column: Pitch / Note Detector & Pluck Log -->
-      <section class="rack-module" aria-label="Pitch Detection and Pluck Log">
-        <div class="module-header">
-          <span class="module-title">02 // YIN Pitch Lock &amp; Target Note Drill</span>
-          <span class="field-value" id="detected-freq-readout">-- Hz</span>
-        </div>
-
-        <div class="transport-row">
-          <div class="control-field">
-            <label class="field-label" for="drill-mode-select">
-              <span>Note Exercise</span>
-            </label>
-            <select id="drill-mode-select">
-              <option value="free" selected>Free Note (Any Pitch)</option>
-              <option value="root-cycle">Cycle Fourths (E → A → D → G → C → F)</option>
-              <option value="random-bar">Random Note Every Bar</option>
-              <option value="fixed-e">Lock on E (Any Octave)</option>
-              <option value="fixed-a">Lock on A (Any Octave)</option>
-            </select>
-          </div>
-
-          <div class="control-field">
-            <label class="field-label" for="instrument-range-select">
-              <span>Instrument Filter</span>
-            </label>
-            <select id="instrument-range-select">
-              <option value="bass" selected>Bass (30 Hz – 400 Hz)</option>
-              <option value="guitar">Guitar (75 Hz – 1100 Hz)</option>
-              <option value="full">Full Range (30 Hz – 1200 Hz)</option>
-            </select>
-          </div>
-        </div>
-
-        <!-- Note & Cents Tuner Box -->
-        <div class="tuner-display">
-          <div class="note-box">
-            <span class="note-box-caption">Detected Note</span>
-            <div class="note-giant" id="detected-note-name">--</div>
-            <span class="note-sub-meta" id="detected-cents-text">Pluck a string</span>
-          </div>
-
-          <div class="note-box">
-            <span class="note-box-caption">Target Note</span>
-            <div class="note-giant target-note" id="target-note-name">ANY</div>
-            <span class="note-sub-meta" id="target-note-status">Free groove mode</span>
-          </div>
-
-          <div class="cents-bar-wrap">
-            <div class="field-label">
-              <span>Flat (-50¢)</span>
-              <span>Intonation</span>
-              <span>Sharp (+50¢)</span>
-            </div>
-            <div class="cents-track">
-              <div class="cents-center"></div>
-              <div class="cents-needle" id="cents-needle"></div>
-            </div>
-          </div>
-        </div>
-
-        <!-- Recent Plucks Log -->
-        <div class="field-label">
-          <span>Recent Pluck Log (Latest First)</span>
-          <span id="note-hit-ratio">Note Match: --</span>
-        </div>
-        <div class="history-list" id="history-list">
-          <div class="history-row header">
-            <span>Beat</span>
-            <span>Note</span>
-            <span>Offset</span>
-            <span>Verdict</span>
-          </div>
-          <div id="history-rows-body">
-            <div class="history-empty">Enable Scarlett input and start the click to log your notes.</div>
-          </div>
-        </div>
-      </section>
-    </main>
-
-    <footer class="helper-footer">
-      <span>TIP: Enable "Direct Monitor" on your Scarlett Solo front panel for zero-latency instrument monitoring.</span>
-      <span>Shortcuts: [Space] Start/Stop Click · [R] Clear Session Stats</span>
+    <footer class="hints">
+      <span><kbd>Space</kbd> play / stop</span>
+      <span><kbd>Enter</kbd> next round</span>
+      <span><kbd>↑</kbd><kbd>↓</kbd> tempo</span>
+      <span><kbd>T</kbd> tap</span>
+      <span><kbd>E</kbd> exercise</span>
+      <span><kbd>S</kbd> setup</span>
+      <span><kbd>R</kbd> reset</span>
     </footer>
   </div>
+
+  <!-- Round results -->
+  <div class="results-backdrop" id="results" hidden>
+    <div class="results-card" role="dialog" aria-modal="false" aria-labelledby="results-title">
+      <div class="results-head">
+        <h2 id="results-title">Round complete</h2>
+        <div class="stars" id="results-stars" aria-label="Stars"></div>
+      </div>
+      <div class="results-metrics">
+        <div><span class="metric-label">In pocket</span><span class="metric-value" id="res-pocket">—</span></div>
+        <div><span class="metric-label">Spread <span class="sigma">σ</span></span><span class="metric-value" id="res-sigma">—</span></div>
+        <div><span class="metric-label">Tendency</span><span class="metric-value" id="res-mean">—</span></div>
+        <div><span class="metric-label">Best streak</span><span class="metric-value" id="res-streak">—</span></div>
+      </div>
+      <p class="results-tip" id="res-tip"></p>
+      <p class="results-tempo" id="res-tempo" hidden></p>
+      <div class="results-actions">
+        <button type="button" class="btn btn-primary" id="res-next">Next round <kbd>Enter</kbd></button>
+        <button type="button" class="btn" id="res-stay">Stay here <kbd>Esc</kbd></button>
+      </div>
+      <div class="countdown" id="countdown">
+        <div class="countdown-track"><div class="countdown-fill" id="countdown-fill"></div></div>
+        <span id="countdown-text">Next round in 6 s</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Drawers -->
+  <div class="drawer-scrim" id="drawer-scrim" hidden></div>
+
+  <aside class="drawer" id="exercise-drawer" aria-label="Exercise settings" aria-hidden="true">
+    <div class="drawer-head">
+      <h2>Exercise</h2>
+      <button type="button" class="icon-btn" data-close-drawer aria-label="Close">✕</button>
+    </div>
+
+    <div class="drawer-body">
+      <fieldset class="group">
+        <legend>Groove</legend>
+        <label class="field">
+          <span class="field-label">Pattern</span>
+          <select id="groove-pattern-select">
+            <option value="uniform">Straight grid</option>
+            <option value="motown-pocket">Motown pocket (1, 2-&amp;, 3, 4)</option>
+            <option value="funk-16th">Funk 16ths</option>
+            <option value="shuffle-swing">Shuffle (swung 8ths)</option>
+            <option value="octaves-8th">Driving 8th octaves</option>
+          </select>
+        </label>
+        <div class="field">
+          <span class="field-label">Grid</span>
+          <div class="segmented" data-setting="subdivision" role="radiogroup" aria-label="Grid">
+            <button type="button" data-value="1">♩ Quarters</button>
+            <button type="button" data-value="2">♪ 8ths</button>
+            <button type="button" data-value="3">Triplets</button>
+            <button type="button" data-value="4">♬ 16ths</button>
+          </div>
+          <span class="field-help" id="subdivision-help" hidden>Set by the pattern.</span>
+        </div>
+        <div class="field">
+          <span class="field-label">Sound</span>
+          <div class="segmented" data-setting="soundMode" role="radiogroup" aria-label="Sound">
+            <button type="button" data-value="click">Click</button>
+            <button type="button" data-value="drums">Drums</button>
+          </div>
+        </div>
+        <div class="field">
+          <span class="field-label">Reference bass</span>
+          <div class="segmented segmented-wrap" data-setting="bassGuideMode" role="radiogroup" aria-label="Reference bass">
+            <button type="button" data-value="off">Off</button>
+            <button type="button" data-value="demo-first">Demo first</button>
+            <button type="button" data-value="always">Play along</button>
+            <button type="button" data-value="call-response-1-3">Echo 1:3</button>
+            <button type="button" data-value="call-response-1-1">Echo 1:1</button>
+          </div>
+          <span class="field-help" id="bass-guide-help"></span>
+        </div>
+      </fieldset>
+
+      <fieldset class="group">
+        <legend>Challenge</legend>
+        <div class="field">
+          <span class="field-label">Visual timing guide</span>
+          <div class="segmented" data-setting="visualGuide" role="radiogroup" aria-label="Visual timing guide">
+            <button type="button" data-value="none">Off · ears only</button>
+            <button type="button" data-value="glow">Beat glow</button>
+            <button type="button" data-value="sweep">Sweep</button>
+          </div>
+          <span class="field-help">A moving line pulls your attention to your eyes. Train your ears.</span>
+        </div>
+        <div class="field">
+          <span class="field-label">Click on</span>
+          <div class="segmented" data-setting="clickPlacement" role="radiogroup" aria-label="Click on">
+            <button type="button" data-value="all">Every beat</button>
+            <button type="button" data-value="backbeat-2-4">2 &amp; 4</button>
+            <button type="button" data-value="one-drop-1">1 only</button>
+            <button type="button" data-value="offbeat-and">The &amp;s</button>
+          </div>
+        </div>
+        <div class="field">
+          <span class="field-label">Silent bars</span>
+          <div class="segmented" data-setting="gapBars" role="radiogroup" aria-label="Silent bars">
+            <button type="button" data-value="0">None</button>
+            <button type="button" data-value="1">3 on · 1 off</button>
+            <button type="button" data-value="2">2 on · 2 off</button>
+          </div>
+        </div>
+        <div class="field">
+          <span class="field-label">Auto tempo after a 3★ round</span>
+          <div class="segmented" data-setting="speedTrainerStep" role="radiogroup" aria-label="Auto tempo">
+            <button type="button" data-value="0">Off</button>
+            <button type="button" data-value="2">+2 BPM</button>
+            <button type="button" data-value="4">+4 BPM</button>
+          </div>
+        </div>
+      </fieldset>
+
+      <fieldset class="group">
+        <legend>Grading</legend>
+        <div class="field">
+          <span class="field-label">Feel target</span>
+          <div class="segmented" data-setting="pocketCenterMs" role="radiogroup" aria-label="Feel target">
+            <button type="button" data-value="-8">Pushed −8</button>
+            <button type="button" data-value="0">On the grid</button>
+            <button type="button" data-value="12">Laid back +12</button>
+          </div>
+        </div>
+        <div class="field">
+          <span class="field-label">Tolerance</span>
+          <div class="segmented" data-setting="pocketWindowMs" role="radiogroup" aria-label="Tolerance">
+            <button type="button" data-value="10">Strict ±10</button>
+            <button type="button" data-value="16">Studio ±16</button>
+            <button type="button" data-value="25">Relaxed ±25</button>
+          </div>
+        </div>
+      </fieldset>
+
+      <fieldset class="group">
+        <legend>Notes</legend>
+        <label class="field">
+          <span class="field-label">Note drill</span>
+          <select id="drill-mode-select">
+            <option value="free">Any note</option>
+            <option value="root-cycle">Cycle of 4ths (E A D G C F…)</option>
+            <option value="random-bar">Random note each bar</option>
+            <option value="fixed-e">Lock on E</option>
+            <option value="fixed-a">Lock on A</option>
+          </select>
+        </label>
+        <div class="field">
+          <span class="field-label">Instrument</span>
+          <div class="segmented" data-setting="instrumentRange" role="radiogroup" aria-label="Instrument">
+            <button type="button" data-value="bass">Bass</button>
+            <button type="button" data-value="guitar">Guitar</button>
+            <button type="button" data-value="full">Full range</button>
+          </div>
+        </div>
+      </fieldset>
+
+      <fieldset class="group">
+        <legend>Session</legend>
+        <div class="field">
+          <span class="field-label">Round length</span>
+          <div class="segmented" data-setting="roundBars" role="radiogroup" aria-label="Round length">
+            <button type="button" data-value="4">4 bars</button>
+            <button type="button" data-value="8">8 bars</button>
+            <button type="button" data-value="16">16 bars</button>
+            <button type="button" data-value="0">Endless</button>
+          </div>
+        </div>
+        <div class="field">
+          <span class="field-label">Start next round automatically</span>
+          <div class="segmented" data-setting="autoContinue" role="radiogroup" aria-label="Auto-continue">
+            <button type="button" data-value="true">On</button>
+            <button type="button" data-value="false">Off</button>
+          </div>
+        </div>
+      </fieldset>
+    </div>
+  </aside>
+
+  <aside class="drawer" id="setup-drawer" aria-label="Audio setup" aria-hidden="true">
+    <div class="drawer-head">
+      <h2>Setup</h2>
+      <button type="button" class="icon-btn" data-close-drawer aria-label="Close">✕</button>
+    </div>
+
+    <div class="drawer-body">
+      <fieldset class="group">
+        <legend>Audio interface</legend>
+        <button type="button" class="btn btn-primary btn-block" id="connect-audio-btn">Connect audio input</button>
+        <label class="field">
+          <span class="field-label">Input device <span class="field-value" id="sample-rate-label"></span></span>
+          <select id="audio-device-select">
+            <option value="">Connect first…</option>
+          </select>
+        </label>
+        <label class="field">
+          <span class="field-label">Output device <span class="field-value" id="output-sink-status">System default</span></span>
+          <select id="audio-output-select">
+            <option value="">System default output</option>
+          </select>
+        </label>
+        <label class="field">
+          <span class="field-label">Input channel</span>
+          <select id="input-channel-select">
+            <option value="auto">Auto (louder of 1 / 2)</option>
+            <option value="0">Input 1</option>
+            <option value="1">Input 2</option>
+            <option value="sum">1 + 2 mono sum</option>
+          </select>
+        </label>
+      </fieldset>
+
+      <fieldset class="group">
+        <legend>Pluck detection</legend>
+        <div class="field">
+          <span class="field-label">Input level <span class="field-value" id="peak-db-readout">−∞ dB</span></span>
+          <div class="channel-meters">
+            <div class="meter-row"><span class="meter-label">IN 1</span><div class="meter-track"><div class="meter-fill" id="meter-ch1"></div><div class="meter-threshold" id="threshold-marker-1"></div></div></div>
+            <div class="meter-row"><span class="meter-label">IN 2</span><div class="meter-track"><div class="meter-fill" id="meter-ch2"></div><div class="meter-threshold" id="threshold-marker-2"></div></div></div>
+          </div>
+        </div>
+        <label class="field">
+          <span class="field-label">Sensitivity threshold <span class="field-value" id="threshold-value-label">0.035</span></span>
+          <input type="range" id="onset-threshold-slider" min="0.008" max="0.180" step="0.002" value="0.035">
+          <span class="field-help">Plucks must cross the amber line. Raise it if string noise triggers notes.</span>
+        </label>
+      </fieldset>
+
+      <fieldset class="group">
+        <legend>Latency</legend>
+        <label class="field">
+          <span class="field-label">Input latency compensation <span class="field-value" id="latency-value-label">18 ms</span></span>
+          <input type="range" id="latency-offset-slider" min="-20" max="85" step="1" value="18">
+        </label>
+        <div class="button-row">
+          <button type="button" class="btn" id="loopback-ping-btn" disabled>Loopback ping</button>
+          <button type="button" class="btn" id="calibrate-btn" disabled>Tap calibrate</button>
+        </div>
+        <p class="calibration-status" id="calibration-status" role="status" aria-live="polite"></p>
+        <span class="field-help">Tip: enable Direct Monitor on the Scarlett for zero-latency monitoring.</span>
+      </fieldset>
+    </div>
+  </aside>
 
   <script type="module" src="/src/main.ts"></script>
 </body>
