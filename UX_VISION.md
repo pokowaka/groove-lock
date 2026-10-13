@@ -437,6 +437,11 @@ Free practice (today's mode) stays available. The Coach is a guide, not a gate.
     its recent peak; the grader scores each beat once. Regression tests use three real Scarlett
     clips (`tests/fixtures`). Replay of the session: duplicates 48 → 0, median +87 → −9 ms.
   - Input was clipping (peak 1.0): Setup now warns "CLIPPING: turn input gain down".
+  - Second finding: the input context (sink 'none') ran 77 ppm off the Scarlett clock, so input
+    samples buffered up (+8 ms in 3 min; loopback crept 24 → 38 ms). The input context now uses the
+    interface's own output as its (silent) sink. Verified in a 5-minute session: loopback 16 ms,
+    no gradual drift, app grading = waveform (−8 ms median), phantom notes 49 → 4. One ~32 ms output
+    dropout at transport start is harmless (excluded from the Setup drift readout).
 
 ### Known gaps / next up
 
