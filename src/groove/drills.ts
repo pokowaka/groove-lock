@@ -116,14 +116,18 @@ function pocketRate(hits: readonly RoundHit[]): number {
 // ---------------------------------------------------------------------------
 
 /**
- * Picks the single most useful drill for a finished round, or `null` if nothing was played.
+ * Picks the single most useful drill for the evidence (one or more recent rounds of the same
+ * groove), or `null` if nothing was played or there is nothing new to offer.
  * Priority: missed notes → click dependence → one trouble step → overall bias → unsteadiness →
- * (all good) a challenge.
+ * (all good) a challenge, skipped when that challenge is already mastered.
+ *
+ * @param summary Summary of `hits` (all evidence rounds combined).
+ * @param opts.mastered Drills the player has mastered; only affects the optional challenge.
  */
 export function recommendDrill(
   summary: RoundSummary,
   hits: readonly RoundHit[],
-  opts: { pocketWindowMs: number; expectedTargetCount: number },
+  opts: { pocketWindowMs: number; expectedTargetCount: number; mastered?: ReadonlySet<DrillId> },
 ): DrillRecommendation | null {
   const w = opts.pocketWindowMs;
   if (hits.length === 0 || summary.meanFeelDeltaMs === null) {
@@ -197,6 +201,9 @@ export function recommendDrill(
     };
   }
 
+  if (opts.mastered?.has('ghost-drummer')) {
+    return null;
+  }
   return {
     drillId: 'ghost-drummer',
     focusStep: null,

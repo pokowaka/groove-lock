@@ -108,6 +108,28 @@ describe('recommendDrill', () => {
     expect(rec?.drillId).toBe('ghost-drummer');
     expect(rec?.reason).toMatch(/solid/i);
   });
+
+  it('does not offer a challenge drill you have already mastered', () => {
+    const hits = spread(16, [1, -1, 2, -2]);
+    const summary = summarizeRound(hits, { pocketWindowMs: W, expectedTargetCount: 16 });
+    const rec = recommendDrill(summary, hits, {
+      pocketWindowMs: W,
+      expectedTargetCount: 16,
+      mastered: new Set(['ghost-drummer']),
+    });
+    expect(rec).toBeNull();
+  });
+
+  it('still prescribes a fix for a real problem even if that drill is mastered', () => {
+    const hits = spread(16, [-10, -12, -11, -9]);
+    const summary = summarizeRound(hits, { pocketWindowMs: W, expectedTargetCount: 16 });
+    const rec = recommendDrill(summary, hits, {
+      pocketWindowMs: W,
+      expectedTargetCount: 16,
+      mastered: new Set(['lay-it-back']),
+    });
+    expect(rec?.drillId).toBe('lay-it-back');
+  });
 });
 
 describe('buildDrillPlan', () => {
