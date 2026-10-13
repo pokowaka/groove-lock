@@ -53,6 +53,20 @@ remove crutches**:
 
 ## 3. Core Concepts
 
+### 3.0 Glossary (shared vocabulary)
+
+| Term | What it is |
+|---|---|
+| **Lane** (timeline lane) | The big strip showing one bar; becomes the scrolling highway later |
+| **Note block** | One square in the lane per note you're asked to play, sized by its length; shows note name and how your last hit on it landed |
+| **Rest** | Dashed outline in the lane: don't play here |
+| **Last note** | Big readout: offset of your most recent hit + judgment |
+| **Pocket meter** | Ruler of recent hits (fading) + grey session histogram |
+| **Groove meter** | Consistency (σ) tier: Machine / Tight / Solid / Loose / Wobbly |
+| **Round** | Count-in + N graded bars; ends with the **results card** |
+| **Take** | The recording of a round (your bass + re-rendered groove) played back on the results card |
+| **Coach / drill** | The Coach suggests one drill (a level ladder of settings) for what went wrong |
+
 ### 3.1 The Timeline Lane (the central element)
 
 Beat lamps, the 16-step strip, the pocket ruler and the pluck log are all partial views of the same
@@ -400,6 +414,16 @@ Free practice (today's mode) stays available. The Coach is a guide, not a gate.
     meaningful while playing."_ → Blocks now show the **most recent hit** on that note, updating
     every pass; the value dims if the note was missed on the next pass. Per-note averages remain
     in the Coach (results card) where they drive the diagnosis.
+
+- **2026-10-12 (playtest) — "+250 ms LATE on every note"**: a real bug, not the player. Latency
+  compensation was capped at 85 ms, tap calibration rejected taps > 160 ms off, and the loopback
+  detector only listened 125 ms per ping, so high-latency setups could never be calibrated.
+  Fixed (`src/groove/calibration.ts`): range −50…400 ms, tap calibration at a fixed 60 BPM (taps
+  accepted up to 450 ms), loopback listens 450 ms with pings 600 ms apart. The results card now
+  detects "every note off by 60+ ms" as **latency, not playing** and offers **Calibrate now (C)**
+  instead of a drill; recalibrating resets session stats and the Coach's evidence.
+  `?demo&demoLatency=250` reproduces it. Also added a glossary (§3.0): the big squares are
+  **note blocks** in the **lane**.
 
 ### Known gaps / next up
 
