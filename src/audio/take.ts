@@ -109,27 +109,44 @@ export function mixGains(mode: PlaybackMode): { drums: number; bass: number } {
 
 /** Encodes mono float samples as a 16-bit PCM WAV file. */
 export function encodeWav(samples: Float32Array, sampleRate: number): ArrayBuffer {
-  const buffer = new ArrayBuffer(44 + samples.length * 2);
+  return encodeWavChannels([samples], sampleRate);
+}
+
+/**
+ * Encodes one or more channels of float samples as an interleaved 16-bit PCM WAV file. Shorter
+ * channels are padded with silence.
+ */
+export function encodeWavChannels(channels: readonly Float32Array[], sampleRate: number): ArrayBuffer {
+  const numChannels = Math.max(1, channels.length);
+  const frames = Math.max(0, ...channels.map((c) => c.length));
+  const blockAlign = numChannels * 2;
+  const dataBytes = frames * blockAlign;
+  const buffer = new ArrayBuffer(44 + dataBytes);
   const view = new DataView(buffer);
   const writeText = (offset: number, text: string): void => {
     for (let i = 0; i < text.length; i++) view.setUint8(offset + i, text.charCodeAt(i));
   };
   writeText(0, 'RIFF');
-  view.setUint32(4, 36 + samples.length * 2, true);
+  view.setUint32(4, 36 + dataBytes, true);
   writeText(8, 'WAVE');
   writeText(12, 'fmt ');
   view.setUint32(16, 16, true);
   view.setUint16(20, 1, true);
-  view.setUint16(22, 1, true);
+  view.setUint16(22, numChannels, true);
   view.setUint32(24, sampleRate, true);
-  view.setUint32(28, sampleRate * 2, true);
-  view.setUint16(32, 2, true);
+  view.setUint32(28, sampleRate * blockAlign, true);
+  view.setUint16(32, blockAlign, true);
   view.setUint16(34, 16, true);
   writeText(36, 'data');
-  view.setUint32(40, samples.length * 2, true);
-  for (let i = 0; i < samples.length; i++) {
-    const s = Math.max(-1, Math.min(1, samples[i]));
-    view.setInt16(44 + i * 2, Math.round(s < 0 ? s * 32768 : s * 32767), true);
+  view.setUint32(40, dataBytes, true);
+  let offset = 44;
+  for (let i = 0; i < frames; i++) {
+    for (let c = 0; c < numChannels; c++) {
+      const raw = channels[c]?.[i] ?? 0;
+      const s = Math.max(-1, Math.min(1, raw));
+      view.setInt16(offset, Math.round(s < 0 ? s * 32768 : s * 32767), true);
+      offset += 2;
+    }
   }
   return buffer;
 }
@@ -170,6 +187,8 @@ export async function renderSoundsOffline(
         break;
       case 'bass':
         synth.scheduleBassNote(ctx, t, s.freqHz, s.gateSec, s.level);
+        break;
+      case 'ping':
         break;
     }
   }

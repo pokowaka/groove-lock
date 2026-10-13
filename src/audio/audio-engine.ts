@@ -44,7 +44,31 @@ export type ScheduledSound =
       readonly freqHz: number;
       readonly gateSec: number;
       readonly level: number;
-    };
+    }
+  | { readonly kind: 'ping'; readonly timeSec: number };
+
+/** Both raw input channels from a diagnostic recording. */
+export interface DiagnosticPcmChunk {
+  readonly inputTimeSec: number;
+  readonly clockOffsetSec: number;
+  readonly sampleRate: number;
+  readonly ch0: Float32Array;
+  readonly ch1: Float32Array;
+}
+
+/** Snapshot of both audio clocks for diagnostics. */
+export interface ClockSnapshot {
+  readonly perfNowMs: number;
+  readonly outputTimeSec: number | null;
+  readonly inputTimeSec: number | null;
+  readonly outputLatencySec: number | null;
+  readonly outputBaseLatencySec: number | null;
+  readonly inputBaseLatencySec: number | null;
+  readonly outputSampleRate: number | null;
+  readonly inputSampleRate: number | null;
+  readonly outputState: string | null;
+  readonly inputState: string | null;
+}
 
 /** A chunk of recorded instrument audio. */
 export interface RecordedPcmChunk {
@@ -107,6 +131,10 @@ export interface AudioEngineCallbacks {
   readonly onRoundComplete?: () => void;
   /** Called with each recorded instrument chunk between `startRecording()` and `stopRecording()`. */
   readonly onPcmChunk?: (chunk: RecordedPcmChunk) => void;
+  /** Diagnostics: called with both raw input channels while a diagnostic recording runs. */
+  readonly onDiagnosticChunk?: (chunk: DiagnosticPcmChunk) => void;
+  /** Diagnostics: called for every sound scheduled on the output (incl. loopback pings). */
+  readonly onSoundScheduled?: (sound: ScheduledSound) => void;
 }
 
 /**
@@ -173,6 +201,7 @@ export class AudioEngine {
   /** Scheduled sounds since `beginSoundLog()`, or `null` when not logging. */
   private soundLog: ScheduledSound[] | null = null;
   private recordStopResolvers: (() => void)[] = [];
+  private diagStopResolvers: (() => void)[] = [];
 
   private channelMode: InputChannelMode = 'auto';
   private onsetThreshold = 0.035;
@@ -562,6 +591,8 @@ export class AudioEngine {
       this.callbacks.onPluck({
         ...msg.event,
         rawOnsetTimeSec: msg.event.rawOnsetTimeSec + clockOffsetSec,
+        inputOnsetTimeSec: msg.event.rawOnsetTimeSec,
+        clockOffsetSec,
       });
     } else if (msg.type === 'loopback-complete') {
       this.callbacks.onLoopbackComplete(msg.summary);
@@ -575,6 +606,21 @@ export class AudioEngine {
         sampleRate: msg.sampleRate,
         samples: msg.samples,
       });
+    } else if (msg.type === 'diag-pcm') {
+      if (!this.outputCtx || !this.inputCtx) {
+        return;
+      }
+      this.callbacks.onDiagnosticChunk?.({
+        inputTimeSec: msg.startTimeSec,
+        clockOffsetSec: this.outputCtx.currentTime - this.inputCtx.currentTime,
+        sampleRate: msg.sampleRate,
+        ch0: msg.ch0,
+        ch1: msg.ch1,
+      });
+    } else if (msg.type === 'diag-stopped') {
+      const resolvers = this.diagStopResolvers;
+      this.diagStopResolvers = [];
+      resolvers.forEach((resolve) => resolve());
     } else if (msg.type === 'record-stopped') {
       const resolvers = this.recordStopResolvers;
       this.recordStopResolvers = [];
@@ -657,6 +703,54 @@ export class AudioEngine {
     return done;
   }
 
+  /** Diagnostics: starts streaming both raw input channels via `onDiagnosticChunk`. */
+  public startDiagnosticRecording(): boolean {
+    if (!this.workletNode) {
+      return false;
+    }
+    const msg: MainToWorkletMessage = { type: 'start-diag' };
+    this.workletNode.port.postMessage(msg);
+    return true;
+  }
+
+  /** Diagnostics: stops streaming; resolves after the final chunk (or a 500 ms timeout). */
+  public stopDiagnosticRecording(): Promise<void> {
+    if (!this.workletNode) {
+      return Promise.resolve();
+    }
+    const done = new Promise<void>((resolve) => {
+      this.diagStopResolvers.push(resolve);
+      window.setTimeout(resolve, 500);
+    });
+    const msg: MainToWorkletMessage = { type: 'stop-diag' };
+    this.workletNode.port.postMessage(msg);
+    return done;
+  }
+
+  /** Diagnostics: both audio clocks, latencies and states right now. */
+  public getClockSnapshot(): ClockSnapshot {
+    const out = this.outputCtx;
+    const inp = this.inputCtx;
+    return {
+      perfNowMs: performance.now(),
+      outputTimeSec: out?.currentTime ?? null,
+      inputTimeSec: inp?.currentTime ?? null,
+      outputLatencySec: out?.outputLatency ?? null,
+      outputBaseLatencySec: out?.baseLatency ?? null,
+      inputBaseLatencySec: inp?.baseLatency ?? null,
+      outputSampleRate: out?.sampleRate ?? null,
+      inputSampleRate: inp?.sampleRate ?? null,
+      outputState: out?.state ?? null,
+      inputState: inp?.state ?? null,
+    };
+  }
+
+  /** Diagnostics: settings and label of the open input track. */
+  public getInputTrackInfo(): { label: string; settings: MediaTrackSettings } | null {
+    const track = this.mediaStream?.getAudioTracks()[0];
+    return track ? { label: track.label, settings: track.getSettings() } : null;
+  }
+
   /** Starts logging every sound the scheduler plays (count-in, groove, landing, reference bass). */
   public beginSoundLog(): void {
     this.soundLog = [];
@@ -673,6 +767,7 @@ export class AudioEngine {
     if (!this.outputCtx) return;
     this.drumSynth.scheduleClick(this.outputCtx, timeSec, variant);
     this.soundLog?.push({ kind: 'click', timeSec, variant });
+    this.callbacks.onSoundScheduled?.({ kind: 'click', timeSec, variant });
   }
 
   private playDrum(kind: 'kick' | 'snare' | 'hihat', timeSec: number, level: number): void {
@@ -681,6 +776,7 @@ export class AudioEngine {
     else if (kind === 'snare') this.drumSynth.scheduleSnare(this.outputCtx, timeSec, level);
     else this.drumSynth.scheduleHiHat(this.outputCtx, timeSec, level);
     this.soundLog?.push({ kind, timeSec, level });
+    this.callbacks.onSoundScheduled?.({ kind, timeSec, level });
   }
 
   private runMetronomeScheduler(): void {
@@ -917,6 +1013,7 @@ export class AudioEngine {
       const gateSec = step.gateBeats * secondsPerBeat;
       this.drumSynth.scheduleBassNote(this.outputCtx, bassTimeSec, freqHz, gateSec, 0.38);
       this.soundLog?.push({ kind: 'bass', timeSec: bassTimeSec, freqHz, gateSec, level: 0.38 });
+      this.callbacks.onSoundScheduled?.({ kind: 'bass', timeSec: bassTimeSec, freqHz, gateSec, level: 0.38 });
     }
 
     const delayMs = Math.max(
@@ -960,6 +1057,7 @@ export class AudioEngine {
     for (let i = 0; i < numPulses; i++) {
       const outEmitTime = nowOut + 0.35 + i * spacingSec;
       inputEmitTimesSec.push(outEmitTime + clockOffsetToInput);
+      this.callbacks.onSoundScheduled?.({ kind: 'ping', timeSec: outEmitTime });
 
       const osc = this.outputCtx.createOscillator();
       const gain = this.outputCtx.createGain();

@@ -71,6 +71,10 @@ export interface DetectedPluckEvent {
   readonly pitch: PitchEstimate | null;
   /** Peak 128-sample block RMS recorded at the initial attack transient. */
   readonly peakRms: number;
+  /** Diagnostics: onset time on the `inputCtx` clock before conversion (set by `AudioEngine`). */
+  readonly inputOnsetTimeSec?: number;
+  /** Diagnostics: `outputCtx − inputCtx` clock offset used for the conversion. */
+  readonly clockOffsetSec?: number;
 }
 
 /**
@@ -140,6 +144,14 @@ export type MainToWorkletMessage =
       readonly type: 'stop-record';
     }
   | {
+      /** Start streaming both raw input channels as `diag-pcm` chunks (diagnostics). */
+      readonly type: 'start-diag';
+    }
+  | {
+      /** Flush, stop diagnostics streaming, then reply with `diag-stopped`. */
+      readonly type: 'stop-diag';
+    }
+  | {
       readonly type: 'stop-loopback';
     };
 
@@ -171,4 +183,16 @@ export type WorkletToMainMessage =
   | {
       /** Acknowledges `stop-record` after the final `pcm` chunk was posted. */
       readonly type: 'record-stopped';
+    }
+  | {
+      /** Both raw input channels while a diagnostic recording runs. */
+      readonly type: 'diag-pcm';
+      /** `inputCtx` time of the first sample. */
+      readonly startTimeSec: number;
+      readonly sampleRate: number;
+      readonly ch0: Float32Array;
+      readonly ch1: Float32Array;
+    }
+  | {
+      readonly type: 'diag-stopped';
     };

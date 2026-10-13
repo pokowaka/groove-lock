@@ -54,6 +54,11 @@ class GrooveLockCaptureProcessor extends AudioWorkletProcessor {
   private recordBuffer = new Float32Array(RECORD_CHUNK_FRAMES);
   private recordFill = 0;
   private recordChunkStartSec = 0;
+  private isDiagRecording = false;
+  private diagCh0 = new Float32Array(RECORD_CHUNK_FRAMES);
+  private diagCh1 = new Float32Array(RECORD_CHUNK_FRAMES);
+  private diagFill = 0;
+  private diagChunkStartSec = 0;
   /** Slowly decaying per-channel energy used to pick the instrument channel in 'auto' mode. */
   private energyCh0 = 0;
   private energyCh1 = 0;
@@ -76,6 +81,14 @@ class GrooveLockCaptureProcessor extends AudioWorkletProcessor {
       } else if (msg.type === 'start-record') {
         this.isRecording = true;
         this.recordFill = 0;
+      } else if (msg.type === 'start-diag') {
+        this.isDiagRecording = true;
+        this.diagFill = 0;
+      } else if (msg.type === 'stop-diag') {
+        this.flushDiagChunk();
+        this.isDiagRecording = false;
+        const outMsg: WorkletToMainMessage = { type: 'diag-stopped' };
+        this.port.postMessage(outMsg);
       } else if (msg.type === 'stop-record') {
         this.flushRecordChunk();
         this.isRecording = false;
@@ -102,6 +115,39 @@ class GrooveLockCaptureProcessor extends AudioWorkletProcessor {
         this.recordChunkStartSec = currentTime + (i + 1) / sampleRate;
       }
     }
+  }
+
+  /** Appends one block of both raw input channels to the diagnostic recording. */
+  private diagBlock(ch0: Float32Array, ch1: Float32Array): void {
+    if (this.diagFill === 0) {
+      this.diagChunkStartSec = currentTime;
+    }
+    for (let i = 0; i < ch0.length; i++) {
+      this.diagCh0[this.diagFill] = ch0[i];
+      this.diagCh1[this.diagFill] = ch1[i];
+      this.diagFill++;
+      if (this.diagFill === RECORD_CHUNK_FRAMES) {
+        this.flushDiagChunk();
+        this.diagChunkStartSec = currentTime + (i + 1) / sampleRate;
+      }
+    }
+  }
+
+  private flushDiagChunk(): void {
+    if (this.diagFill === 0) {
+      return;
+    }
+    const ch0 = this.diagCh0.slice(0, this.diagFill);
+    const ch1 = this.diagCh1.slice(0, this.diagFill);
+    const outMsg: WorkletToMainMessage = {
+      type: 'diag-pcm',
+      startTimeSec: this.diagChunkStartSec,
+      sampleRate,
+      ch0,
+      ch1,
+    };
+    this.port.postMessage(outMsg, [ch0.buffer, ch1.buffer]);
+    this.diagFill = 0;
   }
 
   private flushRecordChunk(): void {
@@ -162,6 +208,9 @@ class GrooveLockCaptureProcessor extends AudioWorkletProcessor {
 
     if (this.isRecording) {
       this.recordBlock(ch0, ch1, analysis.rmsCh0, analysis.rmsCh1);
+    }
+    if (this.isDiagRecording) {
+      this.diagBlock(ch0, ch1);
     }
 
     for (const pluck of analysis.completedPlucks) {

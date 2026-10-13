@@ -3,6 +3,7 @@ import type { RecordedPcmChunk } from '../src/audio/audio-engine';
 import {
   assembleTrack,
   encodeWav,
+  encodeWavChannels,
   median,
   mixGains,
   normalizePeak,
@@ -119,5 +120,25 @@ describe('encodeWav', () => {
     const view = new DataView(encodeWav(Float32Array.from([2, -3]), 8000));
     expect(view.getInt16(44, true)).toBe(32767);
     expect(view.getInt16(46, true)).toBe(-32768);
+  });
+});
+
+describe('encodeWavChannels', () => {
+  it('interleaves multiple channels', () => {
+    const wav = encodeWavChannels([Float32Array.from([1, 0]), Float32Array.from([-1, 0.5])], 44100);
+    const view = new DataView(wav);
+    expect(view.getUint16(22, true)).toBe(2); // channels
+    expect(view.getUint32(28, true)).toBe(44100 * 4); // byte rate
+    expect(view.getUint16(32, true)).toBe(4); // block align
+    expect(view.getUint32(40, true)).toBe(8); // 2 frames x 2 channels x 2 bytes
+    expect(view.getInt16(44, true)).toBe(32767); // L0
+    expect(view.getInt16(46, true)).toBe(-32768); // R0
+    expect(view.getInt16(48, true)).toBe(0); // L1
+    expect(view.getInt16(50, true)).toBe(16384); // R1
+  });
+
+  it('pads shorter channels with silence', () => {
+    const wav = encodeWavChannels([Float32Array.from([0.5, 0.5]), Float32Array.from([0.5])], 8000);
+    expect(new DataView(wav).getInt16(50, true)).toBe(0);
   });
 });
