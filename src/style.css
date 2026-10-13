@@ -721,6 +721,22 @@ kbd {
   background-color: var(--bg-control);
 }
 
+/* ---------- Diagnostics ---------- */
+.diag-steps {
+  clear: both;
+  margin-left: 20px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.diag-steps code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
 /* ---------- Progress drawer ---------- */
 .progress-days,
 .progress-drills {

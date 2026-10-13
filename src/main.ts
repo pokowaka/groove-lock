@@ -5,6 +5,7 @@ import {
   type RecordedPcmChunk,
   type ScheduledSound,
 } from './audio/audio-engine';
+import { DIAGNOSTICS_MAX_SEC, DiagnosticsRecorder } from './audio/diagnostics';
 import {
   assembleTrack,
   mixTakeToWav,
@@ -277,6 +278,8 @@ function bootstrapGrooveLock(): void {
     progressDays: requireEl<HTMLDivElement>('progress-days'),
     progressDrills: requireEl<HTMLDivElement>('progress-drills'),
     progressReset: requireEl<HTMLButtonElement>('progress-reset'),
+    diagToggle: requireEl<HTMLButtonElement>('diag-toggle'),
+    diagStatus: requireEl<HTMLParagraphElement>('diag-status'),
     countdown: requireEl<HTMLDivElement>('countdown'),
     countdownFill: requireEl<HTMLDivElement>('countdown-fill'),
     countdownText: requireEl<HTMLSpanElement>('countdown-text'),
@@ -378,6 +381,10 @@ function bootstrapGrooveLock(): void {
   let countdownAfterPlayback = false;
   let takeAnimationId: number | null = null;
 
+  /** Active diagnostic recording, if any. */
+  let diagnostics: DiagnosticsRecorder | null = null;
+  let diagnosticsTimerId: number | null = null;
+
   let isCalibrating = false;
   let calibrationOffsetsMs: number[] = [];
   /** The player's settings while tap calibration temporarily runs its own slow click. */
@@ -399,6 +406,8 @@ function bootstrapGrooveLock(): void {
     onPcmChunk: (chunk) => {
       pcmSink?.chunks.push(chunk);
     },
+    onDiagnosticChunk: (chunk) => diagnostics?.addChunk(chunk),
+    onSoundScheduled: (sound) => diagnostics?.addSound(sound),
   });
 
   const lane = new TimelineLane(dom.timelineCanvas, () => engine.getAudioClockSec());
@@ -722,6 +731,9 @@ function bootstrapGrooveLock(): void {
   }
 
   function setLatency(ms: number): void {
+    if (ms !== profile.latencyCompensationMs) {
+      diagnostics?.addNote(`latencyCompensationMs ${profile.latencyCompensationMs} -> ${ms}`);
+    }
     profile.latencyCompensationMs = ms;
     persist();
     dom.latencySlider.value = String(ms);
@@ -1576,6 +1588,7 @@ function bootstrapGrooveLock(): void {
   }
 
   function handleTargetScheduled(event: TargetNoteEvent): void {
+    diagnostics?.addTarget(event);
     if (isListenBar(event.barNumber)) {
       return;
     }
@@ -1612,6 +1625,7 @@ function bootstrapGrooveLock(): void {
   // ---------------------------------------------------------------------------
 
   function handlePluckEvent(pluck: DetectedPluckEvent): void {
+    diagnostics?.addPluck(pluck);
     renderDetectedNote(pluck);
     if (!engine.isMetronomeRunning()) {
       return;
@@ -1659,6 +1673,14 @@ function bootstrapGrooveLock(): void {
   function handleGradedHit(entry: GradedPluckEntry): void {
     const judgment = judgeHit(entry.feelDeltaMs, profile.pocketWindowMs);
     const t = entry.targetEvent;
+    diagnostics?.addGraded({
+      targetId: t.id,
+      targetTimeSec: t.timeSec,
+      offsetMs: entry.offsetMs,
+      feelDeltaMs: entry.feelDeltaMs,
+      latencyCompensationMs: profile.latencyCompensationMs,
+      judgment,
+    });
     const subdivision = engine.getEffectiveSubdivision();
     const key = stepKeyOf(t.beatInBar, t.subIndex);
 
@@ -1843,6 +1865,79 @@ function bootstrapGrooveLock(): void {
     resetSession();
   }
 
+  // ---------------------------------------------------------------------------
+  // Diagnostics
+  // ---------------------------------------------------------------------------
+
+  async function startDiagnostics(): Promise<void> {
+    if (diagnostics) return;
+    if (!engine.isInputConnected()) {
+      const ok = await connectAudioInterface(dom.deviceSelect.value || profile.selectedDeviceId);
+      if (!ok) {
+        dom.diagStatus.textContent = 'Connect your audio input first.';
+        return;
+      }
+    }
+    const rec = new DiagnosticsRecorder();
+    rec.addNote(`start; latencyCompensationMs=${profile.latencyCompensationMs}`);
+    rec.addSnapshot(engine.getClockSnapshot());
+    diagnostics = rec;
+    engine.startDiagnosticRecording();
+    dom.diagToggle.textContent = 'Stop & download';
+    dom.diagToggle.classList.add('btn-coach');
+    diagnosticsTimerId = window.setInterval(() => {
+      if (!diagnostics) return;
+      diagnostics.addSnapshot(engine.getClockSnapshot());
+      const sec = Math.floor(diagnostics.durationSec());
+      dom.diagStatus.textContent = `Recording ${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')} · ${diagnostics.pluckCount()} plucks detected`;
+      if (sec >= DIAGNOSTICS_MAX_SEC) {
+        void stopDiagnostics();
+      }
+    }, 500);
+  }
+
+  async function stopDiagnostics(): Promise<void> {
+    const rec = diagnostics;
+    if (!rec) return;
+    if (diagnosticsTimerId !== null) {
+      window.clearInterval(diagnosticsTimerId);
+      diagnosticsTimerId = null;
+    }
+    await engine.stopDiagnosticRecording();
+    rec.addSnapshot(engine.getClockSnapshot());
+    rec.addNote('stop');
+    diagnostics = null;
+    dom.diagToggle.textContent = 'Start diagnostic recording';
+    dom.diagToggle.classList.remove('btn-coach');
+
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const base = `groovelock-diag-${stamp}`;
+    const { wav, json } = rec.export(
+      {
+        profile: { ...profile },
+        inputTrack: engine.getInputTrackInfo(),
+        inputDeviceLabel: dom.deviceSelect.selectedOptions[0]?.textContent ?? '',
+        outputDeviceLabel: dom.outputDeviceSelect.selectedOptions[0]?.textContent ?? '',
+        outputSinkStatus: dom.outputSinkStatus.textContent,
+      },
+      `${base}.wav`,
+    );
+    downloadBlob(json, `${base}.json`);
+    if (wav) {
+      window.setTimeout(() => downloadBlob(wav, `${base}.wav`), 400);
+    }
+    dom.diagStatus.textContent = `Saved ${base}.json${wav ? ' and .wav' : ''} to your Downloads folder.`;
+  }
+
+  function downloadBlob(blob: Blob, fileName: string): void {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = fileName;
+    a.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 10000);
+  }
+
   /** Results card "Calibrate now": open Setup and start tap calibration. */
   function calibrateFromResults(): void {
     drawers.open(dom.setupDrawer, dom.setupChip);
@@ -1861,6 +1956,7 @@ function bootstrapGrooveLock(): void {
   }
 
   function handleLoopbackComplete(summary: LoopbackSummary): void {
+    diagnostics?.addLoopback(summary);
     if (!isLoopbackPinging) {
       return;
     }
@@ -1904,6 +2000,9 @@ function bootstrapGrooveLock(): void {
     drawers.toggle(dom.progressDrawer, dom.progressChip);
   });
   dom.progressReset.addEventListener('click', resetProgress);
+  dom.diagToggle.addEventListener('click', () => {
+    void (diagnostics ? stopDiagnostics() : startDiagnostics());
+  });
   dom.resNext.addEventListener('click', continueAfterResults);
   dom.resFix.addEventListener('click', () => {
     if (resultsFixAction === 'calibrate') {

@@ -446,6 +446,20 @@
         <p class="calibration-status" id="calibration-status" role="status" aria-live="polite"></p>
         <span class="field-help">Tip: enable Direct Monitor on the Scarlett for zero-latency monitoring.</span>
       </fieldset>
+
+      <fieldset class="group">
+        <legend>Diagnostics</legend>
+        <span class="field-help">Records both inputs plus the app's timing log, so timing problems can be analyzed offline.</span>
+        <ol class="diag-steps">
+          <li>Start the recording.</li>
+          <li>Run <b>Loopback ping</b>.</li>
+          <li>Play a few rounds of plain quarter notes (2–3 minutes).</li>
+          <li>Run <b>Loopback ping</b> again.</li>
+          <li>Stop &amp; download: you get a <code>.wav</code> and a <code>.json</code> file.</li>
+        </ol>
+        <button type="button" class="btn btn-block" id="diag-toggle">Start diagnostic recording</button>
+        <p class="calibration-status" id="diag-status" role="status" aria-live="polite"></p>
+      </fieldset>
     </div>
   </aside>
 
