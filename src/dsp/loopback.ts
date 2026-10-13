@@ -1,5 +1,10 @@
 import type { LoopbackPulseResult, LoopbackSummary } from './types';
 
+/** Longest round trip the detector listens for. Pings must be spaced further apart than this. */
+export const LOOPBACK_MAX_RTL_SEC = 0.45;
+/** Recommended spacing between pings so a slow return is never attributed to the next ping. */
+export const LOOPBACK_PING_SPACING_SEC = 0.6;
+
 interface MutablePulseState {
   readonly emitTimeSec: number;
   leadingEdgeTimeSec: number | null;
@@ -18,10 +23,10 @@ interface MutablePulseState {
  * For each pulse $p$:
  * 1. **Ambient Noise Window (`[-45 ms, -2 ms]`):** Measures the peak background floor
  *    (`baselinePeak`) immediately preceding the pulse.
- * 2. **Detection Window (`[+1 ms, +125 ms]`):** Computes a dynamic trigger gate
+ * 2. **Detection Window (`[+1 ms, +450 ms]`):** Computes a dynamic trigger gate
  *    `max(0.0025, baselinePeak * 3.5)` and records the exact sample timestamp
  *    (`leadingEdgeTimeSec`) of the first sample that crosses the gate.
- * 3. **Median Aggregation:** Once the final pulse window closes (`emitTime + 140 ms`),
+ * 3. **Median Aggregation:** Once the final pulse window closes (`emitTime + 470 ms`),
  *    computes the median round-trip latency (`medianRtlMs`) across all valid detections
  *    so any single outlier or string bump is rejected.
  */
@@ -59,7 +64,7 @@ export class LoopbackPingDetector {
 
   /**
    * Scans a block of input samples and returns a `LoopbackSummary` once the final
-   * pulse detection window completes (`lastPulse.emitTimeSec + 140 ms`).
+   * pulse detection window completes (`lastPulse.emitTimeSec + 470 ms`).
    *
    * @param samples Active input channel samples for the current block.
    * @param blockStartTimeSec `currentTime` in seconds at the start of `samples`.
@@ -87,7 +92,7 @@ export class LoopbackPingDetector {
           if (absS > pulse.baselinePeak) {
             pulse.baselinePeak = absS;
           }
-        } else if (relSec >= 0.001 && relSec <= 0.125) {
+        } else if (relSec >= 0.001 && relSec <= LOOPBACK_MAX_RTL_SEC) {
           const triggerFloor = Math.max(0.0025, pulse.baselinePeak * 3.5);
           if (pulse.leadingEdgeTimeSec === null && absS >= triggerFloor) {
             pulse.leadingEdgeTimeSec = sampleTimeSec;
@@ -102,7 +107,7 @@ export class LoopbackPingDetector {
     const lastPulse = this.pulses[this.pulses.length - 1];
     const blockEndTimeSec = blockStartTimeSec + len / sampleRate;
 
-    if (blockEndTimeSec > lastPulse.emitTimeSec + 0.14) {
+    if (blockEndTimeSec > lastPulse.emitTimeSec + LOOPBACK_MAX_RTL_SEC + 0.02) {
       const summary = LoopbackPingDetector.summarize(this.pulses);
       this.stop();
       return summary;
@@ -113,7 +118,7 @@ export class LoopbackPingDetector {
 
   /**
    * Computes the median round-trip latency (in ms) from a list of per-pulse results.
-   * Requires at least 2 valid pulse detections within `[1 ms, 125 ms]`.
+   * Requires at least 2 valid pulse detections within `[1 ms, 450 ms]`.
    */
   public static summarize(
     pulses: readonly LoopbackPulseResult[],
@@ -123,7 +128,7 @@ export class LoopbackPingDetector {
     for (const p of pulses) {
       if (p.leadingEdgeTimeSec !== null) {
         const rtlMs = (p.leadingEdgeTimeSec - p.emitTimeSec) * 1000;
-        if (rtlMs >= 1.0 && rtlMs <= 125.0) {
+        if (rtlMs >= 1.0 && rtlMs <= LOOPBACK_MAX_RTL_SEC * 1000) {
           validRtlsMs.push(rtlMs);
         }
       }

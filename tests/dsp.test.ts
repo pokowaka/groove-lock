@@ -177,52 +177,62 @@ describe('BassOnsetAnalyzer — Open E1 Sustain Immunity & Re-Pluck Detection', 
   });
 });
 
+function runLoopback(
+  emitTimesSec: number[],
+  simulatedRtlMs: number,
+  totalSec: number,
+): LoopbackSummary | null {
+  const totalSamples = Math.floor(totalSec * SAMPLE_RATE);
+  const stream = new Float32Array(totalSamples);
+
+  // Add tiny ambient noise floor
+  for (let i = 0; i < totalSamples; i++) {
+    stream[i] = 0.0002 * Math.sin(i * 0.3);
+  }
+
+  // Inject returning 1760 Hz sonar bursts at emitTime + RTL
+  for (const emitSec of emitTimesSec) {
+    const arrivalSample = Math.round((emitSec + simulatedRtlMs / 1000) * SAMPLE_RATE);
+    const burstSamples = Math.floor(0.012 * SAMPLE_RATE);
+    for (let k = 0; k < burstSamples; k++) {
+      const idx = arrivalSample + k;
+      if (idx < totalSamples) {
+        stream[idx] =
+          0.35 *
+          Math.exp(-k / (0.004 * SAMPLE_RATE)) *
+          Math.sin((2 * Math.PI * 1760 * k) / SAMPLE_RATE);
+      }
+    }
+  }
+
+  const detector = new LoopbackPingDetector();
+  detector.start(emitTimesSec);
+  for (let offset = 0; offset + BLOCK_SIZE <= totalSamples; offset += BLOCK_SIZE) {
+    const block = stream.subarray(offset, offset + BLOCK_SIZE);
+    const res = detector.processBlock(block, offset / SAMPLE_RATE, SAMPLE_RATE);
+    if (res) {
+      return res;
+    }
+  }
+  return null;
+}
+
 describe('LoopbackPingDetector — Sample-Accurate Hardware RTL', () => {
   it('measures exact round-trip latency median across 6 sonar pings', () => {
-    const emitTimesSec = [0.2, 0.5, 0.8, 1.1, 1.4, 1.7];
     const simulatedRtlMs = 19.5; // 19.5ms hardware round-trip delay
-    const totalSamples = Math.floor(2.1 * SAMPLE_RATE);
-    const stream = new Float32Array(totalSamples);
+    const summary = runLoopback([0.2, 0.5, 0.8, 1.1, 1.4, 1.7], simulatedRtlMs, 2.4);
+    expect(summary).not.toBeNull();
+    expect(summary?.success).toBe(true);
+    expect(summary?.detectedCount).toBe(6);
+    expect(summary?.medianRtlMs).not.toBeNull();
+    expect(Math.abs((summary?.medianRtlMs ?? 0) - simulatedRtlMs)).toBeLessThan(0.5);
+  });
 
-    // Add tiny ambient noise floor
-    for (let i = 0; i < totalSamples; i++) {
-      stream[i] = 0.0002 * Math.sin(i * 0.3);
-    }
-
-    // Inject returning 1760 Hz sonar bursts at emitTime + 19.5ms
-    for (const emitSec of emitTimesSec) {
-      const arrivalSample = Math.round(
-        (emitSec + simulatedRtlMs / 1000) * SAMPLE_RATE,
-      );
-      const burstSamples = Math.floor(0.012 * SAMPLE_RATE);
-      for (let k = 0; k < burstSamples; k++) {
-        const idx = arrivalSample + k;
-        if (idx < totalSamples) {
-          stream[idx] =
-            0.35 *
-            Math.exp(-k / (0.004 * SAMPLE_RATE)) *
-            Math.sin((2 * Math.PI * 1760 * k) / SAMPLE_RATE);
-        }
-      }
-    }
-
-    const detector = new LoopbackPingDetector();
-    detector.start(emitTimesSec);
-
-    let completedSummary: LoopbackSummary | null = null;
-    for (let offset = 0; offset + BLOCK_SIZE <= totalSamples; offset += BLOCK_SIZE) {
-      const block = stream.subarray(offset, offset + BLOCK_SIZE);
-      const res = detector.processBlock(block, offset / SAMPLE_RATE, SAMPLE_RATE);
-      if (res) {
-        completedSummary = res;
-        break;
-      }
-    }
-
-    expect(completedSummary).not.toBeNull();
-    expect(completedSummary?.success).toBe(true);
-    expect(completedSummary?.detectedCount).toBe(6);
-    expect(completedSummary?.medianRtlMs).not.toBeNull();
-    expect(Math.abs((completedSummary?.medianRtlMs ?? 0) - simulatedRtlMs)).toBeLessThan(0.5);
+  it('measures large round-trip latencies (e.g. 250 ms) with pings spaced 600 ms apart', () => {
+    const emitTimesSec = [0.2, 0.8, 1.4, 2.0, 2.6, 3.2];
+    const summary = runLoopback(emitTimesSec, 250, 4.0);
+    expect(summary?.success).toBe(true);
+    expect(summary?.detectedCount).toBe(6);
+    expect(Math.abs((summary?.medianRtlMs ?? 0) - 250)).toBeLessThan(0.5);
   });
 });

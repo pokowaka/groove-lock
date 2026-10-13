@@ -27,6 +27,7 @@ import {
   type Subdivision,
   type TargetNoteEvent,
 } from '../groove/timeline';
+import { LOOPBACK_PING_SPACING_SEC } from '../dsp/loopback';
 import captureWorkletUrl from './capture.worklet.ts?worker&url';
 import { StudioDrumSynth } from './drum-synth';
 
@@ -938,7 +939,7 @@ export class AudioEngine {
   }
 
   /**
-   * Emits 6 short 1760 Hz sonar pings on `outputCtx` (spaced 380 ms apart) and instructs
+   * Emits 6 short 1760 Hz sonar pings on `outputCtx` (spaced 600 ms apart) and instructs
    * the `AudioWorkletProcessor` on `inputCtx` to measure the exact sample arrival time.
    */
   public startLoopbackPingTest(): void {
@@ -953,7 +954,7 @@ export class AudioEngine {
     const clockOffsetToInput =
       this.inputCtx.currentTime - this.outputCtx.currentTime;
     const numPulses = 6;
-    const spacingSec = 0.38;
+    const spacingSec = LOOPBACK_PING_SPACING_SEC;
     const inputEmitTimesSec: number[] = [];
 
     for (let i = 0; i < numPulses; i++) {
