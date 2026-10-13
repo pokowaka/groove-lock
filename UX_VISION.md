@@ -378,6 +378,21 @@ Free practice (today's mode) stays available. The Coach is a guide, not a gate.
   - Last 5 takes kept in memory (not persisted yet). Demo mode synthesizes the "played" bass so the
     feature can be previewed without an instrument.
 
+- **2026-10-12 — Coach remembers you** (C2 + C3, chosen over the responsive band and Time Check):
+  - `src/groove/history.ts`: every round is saved (localStorage, last 1000) as a compact record;
+    per-drill progress keeps the best level, level count, last played and completion days.
+  - **Mastery** = completing a drill on 2 different days ("Drill mastered! 🏅"). Mastered drills
+    are not offered again as the optional challenge; real problems still get their drill.
+  - Drills **start one level below your best**, and the suggestion says so ("You reached level 4
+    last time, so you'll start at level 3"), keeping the first round a likely win.
+  - **Diagnosis pools your last 3 rounds of the same groove** (same pattern, grid, feel,
+    tolerance, click, gaps, tempo ±10) — "from your last 3 rounds (90 notes)". Evidence resets
+    when a drill starts or the groove changes.
+  - **Progress drawer (P / 📈 chip):** last 7 days of your own-groove rounds (avg in-pocket bar,
+    rounds, 3★ count) and every drill's best level pips / mastered state; reset button.
+  - Still open from C2: detectors for off-beats vs. downbeats, notes after rests and tempo
+    dependence need new drill capabilities (C5) to be actionable.
+
 ### Known gaps / next up
 
 - Step 1 polish after real-instrument testing: tune judgment thresholds, star rules, tip wording.
