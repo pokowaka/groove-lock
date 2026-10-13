@@ -721,6 +721,68 @@ kbd {
   background-color: var(--bg-control);
 }
 
+/* ---------- Progress drawer ---------- */
+.progress-days,
+.progress-drills {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  clear: both;
+}
+
+.progress-row {
+  display: grid;
+  grid-template-columns: 96px 1fr 150px;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.progress-day {
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.progress-bar {
+  height: 10px;
+  border-radius: 999px;
+  background: var(--bg-inset);
+  border: 1px solid var(--border-subtle);
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: var(--accent-pocket);
+}
+
+.progress-value {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.progress-drill {
+  display: grid;
+  grid-template-columns: 130px auto 1fr;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-inset);
+  border: 1px solid var(--border-subtle);
+}
+
+.progress-drill-title {
+  font-weight: 700;
+}
+
+.progress-drill-status {
+  font-size: 12px;
+  color: var(--text-secondary);
+  text-align: right;
+}
+
 /* ---------- Round playback ---------- */
 .playback {
   display: flex;

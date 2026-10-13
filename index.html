@@ -37,6 +37,11 @@
         <span class="chip-edit" aria-hidden="true">✎</span>
       </button>
 
+      <button type="button" class="status-chip" id="progress-chip" aria-keyshortcuts="P" aria-controls="progress-drawer" title="Progress (P)">
+        <span aria-hidden="true">📈</span>
+        <span>Progress</span>
+      </button>
+
       <button type="button" class="status-chip" id="setup-chip" aria-keyshortcuts="S" aria-controls="setup-drawer">
         <span class="led-dot" id="audio-led"></span>
         <span id="audio-status-text">Audio off</span>
@@ -139,6 +144,7 @@
       <span><kbd>R</kbd> reset</span>
       <span><kbd>F</kbd> fix it</span>
       <span><kbd>L</kbd> replay</span>
+      <span><kbd>P</kbd> progress</span>
     </footer>
   </div>
 
@@ -349,6 +355,30 @@
             <button type="button" data-value="false">Off</button>
           </div>
         </div>
+      </fieldset>
+    </div>
+  </aside>
+
+  <aside class="drawer" id="progress-drawer" aria-label="Progress" aria-hidden="true">
+    <div class="drawer-head">
+      <h2>Progress</h2>
+      <button type="button" class="icon-btn" data-close-drawer aria-label="Close">✕</button>
+    </div>
+    <div class="drawer-body">
+      <fieldset class="group">
+        <legend>Your groove · last 7 days</legend>
+        <div class="progress-days" id="progress-days"></div>
+        <span class="field-help">Average in-pocket rate of your own rounds (drill rounds excluded).</span>
+      </fieldset>
+      <fieldset class="group">
+        <legend>Drills</legend>
+        <div class="progress-drills" id="progress-drills"></div>
+        <span class="field-help">Beat every level of a drill on two different days to master it. Drills start one level below your best.</span>
+      </fieldset>
+      <fieldset class="group">
+        <legend>Data</legend>
+        <button type="button" class="btn" id="progress-reset">Reset progress</button>
+        <span class="field-help">Stored in this browser only.</span>
       </fieldset>
     </div>
   </aside>
