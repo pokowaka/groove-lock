@@ -101,6 +101,15 @@ def main() -> None:
             print(f'  {name} clock vs system clock: {rate_ppm:+.0f} ppm')
     print(f"  input clock device: {meta.get('inputClockDevice')!r} (None = separate clock), "
           f"drift reported by app: {meta.get('inputDriftMs')}")
+    # Sudden steps: one clock advancing noticeably less/more than wall time between snapshots
+    # (dropouts/stalls). Gradual drift shows up in the trend below instead.
+    for prev, cur in zip(snaps, snaps[1:]):
+        wall = (cur['perfNowMs'] - prev['perfNowMs']) / 1000
+        for name, key in (('output', 'outputTimeSec'), ('input', 'inputTimeSec')):
+            lost = (wall - (cur[key] - prev[key])) * 1000
+            if abs(lost) > 10:
+                print(f"  {name} clock step at {cur['perfNowMs'] / 1000:.1f} s: "
+                      f"{'lost' if lost > 0 else 'gained'} {abs(lost):.0f} ms vs wall time (dropout/stall)")
     offs = np.array([c['clockOffsetSec'] for c in chunks]) * 1000
     times = np.array([c['inputTimeSec'] for c in chunks])
     if offs.size > 2:
