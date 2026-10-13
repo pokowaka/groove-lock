@@ -722,6 +722,7 @@ kbd {
 }
 
 /* ---------- Clipping warning ---------- */
+.field-help.is-clipping,
 .field-value.is-clipping {
   color: var(--accent-miss);
   font-weight: 700;

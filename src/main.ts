@@ -279,6 +279,7 @@ function bootstrapGrooveLock(): void {
     progressDrills: requireEl<HTMLDivElement>('progress-drills'),
     progressReset: requireEl<HTMLButtonElement>('progress-reset'),
     diagToggle: requireEl<HTMLButtonElement>('diag-toggle'),
+    clockStatus: requireEl<HTMLParagraphElement>('clock-status'),
     diagStatus: requireEl<HTMLParagraphElement>('diag-status'),
     countdown: requireEl<HTMLDivElement>('countdown'),
     countdownFill: requireEl<HTMLDivElement>('countdown-fill'),
@@ -834,6 +835,23 @@ function bootstrapGrooveLock(): void {
     dom.peakDbReadout.classList.toggle('is-clipping', clipping);
     dom.setupChip.classList.toggle('is-clipping', clipping);
     dom.setupChip.title = clipping ? 'Input is clipping: turn the Scarlett gain down' : '';
+    renderClockStatus();
+  }
+
+  /** Drift (ms) of the input delay since calibration that warrants re-measuring. */
+  const DRIFT_WARN_MS = 8;
+
+  function renderClockStatus(): void {
+    const device = engine.getInputClockDeviceLabel();
+    const drift = engine.getInputDriftMs();
+    const driftText =
+      drift === null ? 'measuring drift…' : `input delay changed ${drift >= 0 ? '+' : ''}${drift.toFixed(0)} ms since calibration`;
+    const clockText = device ? `Input clock: locked to ${device}` : 'Input clock: separate from the interface';
+    dom.clockStatus.textContent =
+      drift !== null && Math.abs(drift) >= DRIFT_WARN_MS
+        ? `${clockText} · ${driftText}. Run Loopback ping again.`
+        : `${clockText} · ${driftText}`;
+    dom.clockStatus.classList.toggle('is-clipping', drift !== null && Math.abs(drift) >= DRIFT_WARN_MS);
   }
 
   // ---------------------------------------------------------------------------
@@ -1877,6 +1895,7 @@ function bootstrapGrooveLock(): void {
    * evidence and the live session stats so nothing mixes before/after calibration.
    */
   function onLatencyCalibrated(): void {
+    engine.resetDriftBaseline();
     evidence = null;
     resetSession();
   }
@@ -1935,6 +1954,8 @@ function bootstrapGrooveLock(): void {
         inputDeviceLabel: dom.deviceSelect.selectedOptions[0]?.textContent ?? '',
         outputDeviceLabel: dom.outputDeviceSelect.selectedOptions[0]?.textContent ?? '',
         outputSinkStatus: dom.outputSinkStatus.textContent,
+        inputClockDevice: engine.getInputClockDeviceLabel(),
+        inputDriftMs: engine.getInputDriftMs(),
       },
       `${base}.wav`,
     );

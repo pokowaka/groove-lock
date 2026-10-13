@@ -92,6 +92,15 @@ def main() -> None:
         gaps.append((cur['inputTimeSec'] - expected) * 1000)
     big = [g for g in gaps if abs(g) > 1]
     print(f'  chunks: {len(chunks)}, discontinuities > 1 ms: {len(big)} {big[:10]}')
+    snaps = [s for s in log.get('clockSnapshots', []) if s.get('outputTimeSec') is not None and s.get('inputTimeSec') is not None]
+    if len(snaps) > 10:
+        pn = np.array([s['perfNowMs'] for s in snaps]) / 1000
+        for name, key in (('output', 'outputTimeSec'), ('input', 'inputTimeSec')):
+            v = np.array([s[key] for s in snaps])
+            rate_ppm = (np.polyfit(pn - pn[0], v - v[0], 1)[0] - 1) * 1e6
+            print(f'  {name} clock vs system clock: {rate_ppm:+.0f} ppm')
+    print(f"  input clock device: {meta.get('inputClockDevice')!r} (None = separate clock), "
+          f"drift reported by app: {meta.get('inputDriftMs')}")
     offs = np.array([c['clockOffsetSec'] for c in chunks]) * 1000
     times = np.array([c['inputTimeSec'] for c in chunks])
     if offs.size > 2:

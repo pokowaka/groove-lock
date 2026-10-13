@@ -202,6 +202,9 @@ export class AudioEngine {
   private soundLog: ScheduledSound[] | null = null;
   private recordStopResolvers: (() => void)[] = [];
   private diagStopResolvers: (() => void)[] = [];
+  private inputClockDeviceLabel: string | null = null;
+  /** Output-input clock offset over time, for drift monitoring (first sample kept as reference). */
+  private clockOffsetSamples: { atMs: number; offsetMs: number }[] = [];
 
   private channelMode: InputChannelMode = 'auto';
   private onsetThreshold = 0.035;
@@ -543,6 +546,7 @@ export class AudioEngine {
     }
 
     this.mediaStream = stream;
+    await this.lockInputClockToDevice(stream, deviceLists.outputs);
 
     if (this.sourceNode) {
       this.sourceNode.disconnect();
@@ -579,8 +583,90 @@ export class AudioEngine {
     return deviceLists;
   }
 
+  /**
+   * Runs `inputCtx` on the audio interface's own clock by giving it the interface's (silent)
+   * output as its sink. With a `'none'` sink the input context runs on a separate clock that drifts
+   * against the interface (measured ~77 ppm on a Scarlett Solo); the browser then buffers the
+   * difference and the input delay creeps up during a session. The capture worklet has no outputs,
+   * so nothing is ever played on this sink. Falls back to `'none'` when no matching output exists.
+   */
+  private async lockInputClockToDevice(
+    stream: MediaStream,
+    outputs: readonly MediaDeviceInfo[],
+  ): Promise<void> {
+    this.inputClockDeviceLabel = null;
+    const ctx = this.inputCtx;
+    if (!ctx || typeof ctx.setSinkId !== 'function') {
+      return;
+    }
+    const groupId = stream.getAudioTracks()[0]?.getSettings?.().groupId ?? '';
+    const sameDevice = groupId ? outputs.find((d) => d.groupId === groupId && d.deviceId) : undefined;
+    try {
+      if (sameDevice) {
+        await ctx.setSinkId(sameDevice.deviceId);
+        this.inputClockDeviceLabel = sameDevice.label || 'audio interface';
+      } else {
+        await ctx.setSinkId({ type: 'none' });
+      }
+    } catch {
+      try {
+        await ctx.setSinkId({ type: 'none' });
+      } catch {
+        // Keep whatever sink the context has.
+      }
+    }
+    if (ctx.state === 'suspended') {
+      await ctx.resume();
+    }
+    this.clockOffsetSamples = [];
+  }
+
+  /** Restarts drift measurement (call after calibrating latency). */
+  public resetDriftBaseline(): void {
+    this.clockOffsetSamples = [];
+  }
+
+  /** Label of the device whose clock drives the input context, or `null` if it runs on its own. */
+  public getInputClockDeviceLabel(): string | null {
+    return this.inputClockDeviceLabel;
+  }
+
+  /**
+   * How much the output-input clock offset has moved since the input was connected (ms, median of
+   * the latest 10 s vs. the first 10 s). Growth means input samples are piling up in the browser's
+   * buffer, i.e. the input delay has increased by about that much since calibration.
+   */
+  public getInputDriftMs(): number | null {
+    const samples = this.clockOffsetSamples;
+    if (samples.length < 20) return null;
+    const t0 = samples[0].atMs;
+    const tEnd = samples[samples.length - 1].atMs;
+    const med = (xs: number[]): number => {
+      const sorted = [...xs].sort((a, b) => a - b);
+      return sorted[Math.floor(sorted.length / 2)];
+    };
+    const first = med(samples.filter((x) => x.atMs - t0 <= 10000).map((x) => x.offsetMs));
+    const last = med(samples.filter((x) => tEnd - x.atMs <= 10000).map((x) => x.offsetMs));
+    return last - first;
+  }
+
+  private recordClockOffset(): void {
+    if (!this.outputCtx || !this.inputCtx) return;
+    const atMs = performance.now();
+    const lastSample = this.clockOffsetSamples[this.clockOffsetSamples.length - 1];
+    if (lastSample && atMs - lastSample.atMs < 250) return;
+    this.clockOffsetSamples.push({
+      atMs,
+      offsetMs: (this.outputCtx.currentTime - this.inputCtx.currentTime) * 1000,
+    });
+    if (this.clockOffsetSamples.length > 20000) {
+      this.clockOffsetSamples.splice(1, 1);
+    }
+  }
+
   private handleWorkletMessage(msg: WorkletToMainMessage): void {
     if (msg.type === 'meter') {
+      this.recordClockOffset();
       this.callbacks.onMeter(msg.snapshot);
     } else if (msg.type === 'pluck') {
       if (!this.outputCtx || !this.inputCtx) {
