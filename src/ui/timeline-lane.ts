@@ -314,20 +314,24 @@ export class TimelineLane {
     }
 
     if (tendency !== null && heat !== null) {
-      const ms = Math.round(Math.abs(heat));
-      const roomy = bw >= 92;
-      const text =
-        tendency === 'on'
-          ? '✓'
-          : tendency === 'early'
-            ? `← ${ms}${roomy ? ' ms' : ''}`
-            : `${ms}${roomy ? ' ms' : ''} →`;
+      // Average timing on this note: a signed number (same convention as the "Last note" readout,
+      // negative = early) plus a plain word, so it can't be misread as a direction to move.
       const color =
         tendency === 'on' ? PALETTE.locked : tendency === 'early' ? PALETTE.rush : PALETTE.drag;
+      const word = tendency === 'on' ? 'ON TIME' : tendency === 'early' ? 'EARLY' : 'LATE';
+      const ms = Math.round(Math.abs(heat));
+      const sign = tendency === 'early' ? '−' : '+';
+      const roomy = bw >= 92;
+      const main = tendency === 'on' ? '✓' : `${sign}${ms}${roomy ? ' ms' : ''}`;
+
+      const centerY = top + height * (label ? 0.64 : 0.5);
+      const mainSize = Math.min(tendency === 'on' ? 34 : 22, Math.max(12, bw / (tendency === 'on' ? 3 : 4)), height / 5);
+      const wordSize = Math.min(13, Math.max(9, bw / 7));
       ctx.fillStyle = color;
-      const size = Math.min(tendency === 'on' ? 40 : 20, Math.max(11, bw / (tendency === 'on' ? 3 : 4.5)), height / 4);
-      ctx.font = `700 ${size}px ${FONTS.mono}`;
-      ctx.fillText(text, cx, top + height * (label ? 0.64 : 0.5));
+      ctx.font = `700 ${mainSize}px ${FONTS.mono}`;
+      ctx.fillText(main, cx, centerY - wordSize * 0.6);
+      ctx.font = `700 ${wordSize}px ${FONTS.sans}`;
+      ctx.fillText(word, cx, centerY + mainSize * 0.55 + 2);
     }
   }
 
