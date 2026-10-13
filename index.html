@@ -436,12 +436,13 @@
         <legend>Latency</legend>
         <label class="field">
           <span class="field-label">Input latency compensation <span class="field-value" id="latency-value-label">18 ms</span></span>
-          <input type="range" id="latency-offset-slider" min="-20" max="85" step="1" value="18">
+          <input type="range" id="latency-offset-slider" min="-50" max="400" step="1" value="18">
         </label>
         <div class="button-row">
           <button type="button" class="btn" id="loopback-ping-btn" disabled>Loopback ping</button>
           <button type="button" class="btn" id="calibrate-btn" disabled>Tap calibrate</button>
         </div>
+        <span class="field-help">Tap calibrate: a slow click plays; pluck exactly on each click (8 times). If every note shows a big constant LATE, calibrate.</span>
         <p class="calibration-status" id="calibration-status" role="status" aria-live="polite"></p>
         <span class="field-help">Tip: enable Direct Monitor on the Scarlett for zero-latency monitoring.</span>
       </fieldset>

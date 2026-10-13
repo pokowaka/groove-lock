@@ -86,6 +86,14 @@ import {
   saveProfile,
   type VisualGuideMode,
 } from './groove/storage';
+import {
+  CALIBRATION_BPM,
+  CALIBRATION_MAX_TAP_OFFSET_MS,
+  CALIBRATION_TAPS,
+  clampLatencyMs,
+  detectLatencyIssue,
+  estimateLatencyMs,
+} from './groove/calibration';
 import { computeTapTempoBpm, TAP_RESET_GAP_MS } from './groove/tap-tempo';
 import {
   computeBarTarget,
@@ -372,6 +380,10 @@ function bootstrapGrooveLock(): void {
 
   let isCalibrating = false;
   let calibrationOffsetsMs: number[] = [];
+  /** The player's settings while tap calibration temporarily runs its own slow click. */
+  let calibrationSavedSettings: DrillSettings | null = null;
+  /** What the results card's coach button does. */
+  let resultsFixAction: 'drill' | 'calibrate' = 'drill';
   let isLoopbackPinging = false;
 
   const engine = new AudioEngine({
@@ -397,7 +409,7 @@ function bootstrapGrooveLock(): void {
     ? new DemoPlayer({
         deliver: handlePluckEvent,
         readClock: () => engine.getAudioClockSec(),
-        readLatencyMs: () => profile.latencyCompensationMs,
+        hardwareLatencyMs: Number(new URLSearchParams(window.location.search).get('demoLatency') ?? 18),
         readRange: () => profile.instrumentRange,
       })
     : null;
@@ -406,9 +418,13 @@ function bootstrapGrooveLock(): void {
   // Settings
   // ---------------------------------------------------------------------------
 
-  /** Saves the profile; during a drill the player's own practice settings are saved instead. */
+  /**
+   * Saves the profile; during a drill or calibration the player's own practice settings are saved
+   * instead of the temporary ones.
+   */
   function persist(): void {
-    saveProfile(activeDrill ? { ...profile, ...activeDrill.savedSettings } : profile);
+    const own = calibrationSavedSettings ?? activeDrill?.savedSettings ?? null;
+    saveProfile(own ? { ...profile, ...own } : profile);
   }
 
   function effectiveRoundBars(): number {
@@ -826,6 +842,9 @@ function bootstrapGrooveLock(): void {
 
   function stopPlaying(): void {
     engine.stopMetronome();
+    if (isCalibrating) {
+      endCalibrationMode();
+    }
     isRoundActive = false;
     discardRoundRecording();
     stopTakePlayback();
@@ -868,6 +887,7 @@ function bootstrapGrooveLock(): void {
       return;
     }
 
+    const latencyIssue = detectLatencyIssue(summary);
     const pooled = addEvidence(roundHits, roundExpectedTargets);
     const pooledSummary = summarizeRound(pooled.hits, {
       pocketWindowMs: profile.pocketWindowMs,
@@ -878,7 +898,8 @@ function bootstrapGrooveLock(): void {
       expectedTargetCount: pooled.expected,
       mastered: masteredDrills(coachProgress),
     });
-    pendingRecommendation = rec ? { rec, summary: pooledSummary, hits: pooled.hits } : null;
+    pendingRecommendation =
+      rec && !latencyIssue ? { rec, summary: pooledSummary, hits: pooled.hits } : null;
 
     let compare: string | null = null;
     if (transferBaseline) {
@@ -894,9 +915,13 @@ function bootstrapGrooveLock(): void {
     }
 
     dom.resultsTitle.textContent = compare ? 'Back in the groove' : 'Round complete';
-    dom.resFix.hidden = rec === null;
+    dom.resFix.hidden = rec === null && latencyIssue === null;
     dom.resNextLabel.textContent = 'Next round';
-    if (rec) {
+    resultsFixAction = latencyIssue ? 'calibrate' : 'drill';
+    if (latencyIssue) {
+      dom.resFix.replaceChildren('Calibrate now ', kbd('C'));
+      showCoachBox('Check your latency first', latencyIssue.message, compare, null);
+    } else if (rec) {
       const plan = buildDrillPlan(rec.drillId, currentDrillSettings(), rec.focusStep);
       const entry = entryLevelFor(coachProgress, rec.drillId, plan.levels.length);
       const evidenceNote =
@@ -1738,40 +1763,90 @@ function bootstrapGrooveLock(): void {
   // Calibration
   // ---------------------------------------------------------------------------
 
+  /**
+   * Tap calibration: plays a plain click at 60 BPM (1 s apart, so even large latencies can't be
+   * mistaken for the next beat) and measures how late your plucks arrive. Your own settings are
+   * restored afterwards.
+   */
   function startTapCalibration(): void {
     isLoopbackPinging = false;
     engine.stopLoopbackPingTest();
+    if (activeDrill) {
+      exitDrill(false);
+    }
     if (engine.isMetronomeRunning()) {
       stopPlaying();
     }
+    cancelCountdown();
+    stopTakePlayback();
+    dom.results.hidden = true;
+    const own = currentDrillSettings();
+    calibrationSavedSettings = own;
+    applyPracticeSettings({
+      ...own,
+      bpm: CALIBRATION_BPM,
+      groovePattern: 'uniform',
+      subdivision: 1,
+      clickPlacement: 'all',
+      gapBars: 0,
+      soundMode: 'click',
+      bassGuideMode: 'off',
+      speedTrainerStep: 0,
+    });
     isCalibrating = true;
     calibrationOffsetsMs = [];
-    dom.calibrationStatus.textContent = 'Pluck right on every click… (0 / 8)';
+    dom.calibrationStatus.textContent = `Pluck right on every click… (0 / ${CALIBRATION_TAPS})`;
     void startPlaying();
   }
 
-  function finishCalibration(message: string): void {
+  /** Leaves calibration mode and restores the player's own settings. */
+  function endCalibrationMode(): void {
     isCalibrating = false;
+    const own = calibrationSavedSettings;
+    calibrationSavedSettings = null;
+    if (own) {
+      applyPracticeSettings(own);
+    }
+  }
+
+  function finishCalibration(message: string): void {
     dom.calibrationStatus.textContent = message;
     if (engine.isMetronomeRunning()) {
       stopPlaying();
+    } else if (isCalibrating) {
+      endCalibrationMode();
     }
+    showOverlay('Calibrated — press Space to play', message);
   }
 
   function recordCalibrationHit(rawOnsetTimeSec: number): void {
     const match = grader.findNearestTarget(rawOnsetTimeSec, true);
-    if (!match || Math.abs(match.offsetMs) > 160) {
+    if (!match || Math.abs(match.offsetMs) > CALIBRATION_MAX_TAP_OFFSET_MS) {
       return;
     }
     calibrationOffsetsMs.push(match.offsetMs);
-    dom.calibrationStatus.textContent = `Pluck right on every click… (${calibrationOffsetsMs.length} / 8)`;
-    if (calibrationOffsetsMs.length >= 8) {
-      const trimmed = [...calibrationOffsetsMs].sort((a, b) => a - b).slice(1, -1);
-      const avgMs = Math.round(trimmed.reduce((a, v) => a + v, 0) / trimmed.length);
-      const clampedMs = Math.max(-20, Math.min(85, avgMs));
-      setLatency(clampedMs);
-      finishCalibration(`Calibrated: latency compensation set to ${clampedMs} ms.`);
+    dom.calibrationStatus.textContent = `Pluck right on every click… (${calibrationOffsetsMs.length} / ${CALIBRATION_TAPS})`;
+    if (calibrationOffsetsMs.length >= CALIBRATION_TAPS) {
+      const latencyMs = estimateLatencyMs(calibrationOffsetsMs) ?? profile.latencyCompensationMs;
+      setLatency(latencyMs);
+      onLatencyCalibrated();
+      finishCalibration(`Latency compensation set to ${latencyMs} ms.`);
     }
+  }
+
+  /**
+   * Timing measured with a different latency compensation isn't comparable: drop the Coach's pooled
+   * evidence and the live session stats so nothing mixes before/after calibration.
+   */
+  function onLatencyCalibrated(): void {
+    evidence = null;
+    resetSession();
+  }
+
+  /** Results card "Calibrate now": open Setup and start tap calibration. */
+  function calibrateFromResults(): void {
+    drawers.open(dom.setupDrawer, dom.setupChip);
+    startTapCalibration();
   }
 
   function startLoopbackPing(): void {
@@ -1795,8 +1870,9 @@ function bootstrapGrooveLock(): void {
         'No return pings detected. Turn up output/gain or lower the sensitivity threshold.';
       return;
     }
-    const clampedMs = Math.max(-20, Math.min(85, Math.round(summary.medianRtlMs)));
+    const clampedMs = clampLatencyMs(summary.medianRtlMs);
     setLatency(clampedMs);
+    onLatencyCalibrated();
     dom.calibrationStatus.textContent = `Round-trip latency ${clampedMs} ms (${summary.detectedCount}/${summary.totalPulses} pings) — applied.`;
   }
 
@@ -1829,7 +1905,13 @@ function bootstrapGrooveLock(): void {
   });
   dom.progressReset.addEventListener('click', resetProgress);
   dom.resNext.addEventListener('click', continueAfterResults);
-  dom.resFix.addEventListener('click', startRecommendedDrill);
+  dom.resFix.addEventListener('click', () => {
+    if (resultsFixAction === 'calibrate') {
+      calibrateFromResults();
+    } else {
+      startRecommendedDrill();
+    }
+  });
   dom.drillExit.addEventListener('click', () => exitDrill(false));
   dom.takePlay.addEventListener('click', toggleTakePlayback);
   dom.takeDownload.addEventListener('click', () => void downloadCurrentTake());
@@ -1890,6 +1972,7 @@ function bootstrapGrooveLock(): void {
   dom.latencySlider.addEventListener('input', () => {
     setLatency(parseInt(dom.latencySlider.value, 10));
   });
+  dom.latencySlider.addEventListener('change', onLatencyCalibrated);
   dom.loopbackPingBtn.addEventListener('click', startLoopbackPing);
   dom.calibrateBtn.addEventListener('click', startTapCalibration);
 
@@ -1936,6 +2019,12 @@ function bootstrapGrooveLock(): void {
         if (!dom.results.hidden && pendingRecommendation && !activeDrill) {
           e.preventDefault();
           startRecommendedDrill();
+        }
+        break;
+      case 'KeyC':
+        if (!dom.results.hidden && resultsFixAction === 'calibrate' && !dom.resFix.hidden) {
+          e.preventDefault();
+          calibrateFromResults();
         }
         break;
       case 'KeyL':

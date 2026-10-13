@@ -1,4 +1,5 @@
 import type { InputChannelMode, InstrumentRange } from '../dsp/types';
+import { LATENCY_MAX_MS, LATENCY_MIN_MS } from './calibration';
 import type {
   BassGuideMode,
   ClickPlacementMode,
@@ -21,7 +22,7 @@ export interface GrooveLockProfile {
   selectedChannel: InputChannelMode;
   /** RMS threshold (`0.008..0.180`) required to trigger a pluck onset. */
   onsetThreshold: number;
-  /** Calibrated hardware round-trip latency compensation in milliseconds (`-20..85`). */
+  /** Calibrated total latency compensation in milliseconds (`-50..400`). */
   latencyCompensationMs: number;
   /** Metronome tempo in beats per minute (`40..200`). */
   bpm: number;
@@ -132,8 +133,8 @@ export function loadProfile(): GrooveLockProfile {
           : DEFAULT_PROFILE.onsetThreshold,
       latencyCompensationMs:
         typeof parsed.latencyCompensationMs === 'number' &&
-        parsed.latencyCompensationMs >= -50 &&
-        parsed.latencyCompensationMs <= 120
+        parsed.latencyCompensationMs >= LATENCY_MIN_MS &&
+        parsed.latencyCompensationMs <= LATENCY_MAX_MS
           ? Math.round(parsed.latencyCompensationMs)
           : DEFAULT_PROFILE.latencyCompensationMs,
       bpm:
