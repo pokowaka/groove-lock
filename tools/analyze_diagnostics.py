@@ -29,27 +29,29 @@ def load_wav(path: Path) -> tuple[np.ndarray, int]:
 
 
 def detect_onsets(x: np.ndarray, rate: int, min_gap_sec: float = 0.12) -> np.ndarray:
-    """Sample-accurate attack times: smoothed envelope crosses an adaptive threshold, then the
-    exact start is refined to the first sample above 20% of the local peak."""
-    env = np.convolve(np.abs(x), np.ones(int(rate * 0.002)) / int(rate * 0.002), mode='same')
+    """Sample-accurate attack times. A 30 ms envelope (cycle-safe for low bass notes) must rise
+    above an adaptive threshold and re-arms only after falling below 25% of it, so a ringing or
+    clipped note counts once; the exact start is refined to the first raw sample above 20% of the
+    local peak."""
+    win = int(rate * 0.03)
+    env = np.convolve(np.abs(x), np.ones(win) / win, mode='same')
     noise = np.percentile(env, 20)
     peak = np.percentile(env, 99.5)
     thresh = noise + 0.15 * (peak - noise)
-    above = env > thresh
+    rearm = noise + 0.25 * (thresh - noise)
     onsets = []
+    armed = True
     last = -1e9
-    idx = np.flatnonzero(above[1:] & ~above[:-1]) + 1
-    for i in idx:
-        if (i - last) / rate < min_gap_sec:
-            continue
-        window = np.abs(x[max(0, i - int(rate * 0.01)) : i + int(rate * 0.02)])
-        if window.size == 0:
-            continue
-        local_peak = window.max()
-        start = max(0, i - int(rate * 0.01))
-        first = start + int(np.argmax(window >= 0.2 * local_peak))
-        onsets.append(first / rate)
-        last = i
+    for i in np.flatnonzero((env > thresh) | (env < rearm)):
+        if armed and env[i] > thresh and (i - last) / rate >= min_gap_sec:
+            start = max(0, i - win)
+            window = np.abs(x[start : i + win])
+            local_peak = window.max()
+            onsets.append((start + int(np.argmax(window >= 0.2 * local_peak))) / rate)
+            last = i
+            armed = False
+        elif not armed and env[i] < rearm:
+            armed = True
     return np.array(onsets)
 
 
@@ -101,17 +103,24 @@ def main() -> None:
     onsets = [detect_onsets(audio[c], rate) + t0 for c in range(audio.shape[0])]
     for c, o in enumerate(onsets):
         print(f'  waveform onsets on input {c + 1}: {o.size}')
-    ch = int(np.argmax([o.size for o in onsets]))
+    ch = int(np.argmax([float(np.sqrt(np.mean(a ** 2))) for a in audio]))
     wave_onsets = onsets[ch]
     errs = []
+    phantom = []
     for p in log['plucks']:
         t_in = p.get('inputOnsetTimeSec')
         if t_in is None:
             continue
         n = nearest(wave_onsets, t_in)
-        if n is not None and abs(n - t_in) < 0.3:
+        if n is None:
+            continue
+        if abs(n - t_in) <= 0.03:
             errs.append((t_in - n) * 1000)
-    stats(f'detector minus waveform (input {ch + 1}; + = detector late)', errs)
+        else:
+            phantom.append((t_in - n) * 1000)
+    stats(f'detector minus waveform attack (input {ch + 1}; + = detector late)', errs)
+    print(f'  detections not on any attack (> 30 ms away, e.g. false re-plucks): {len(phantom)}'
+          + (f'  typical {np.median(phantom):+.0f} ms after an attack' if phantom else ''))
 
     print('\n3. Waveform onsets vs. scheduled clicks (latency-compensated)')
     median_off = log['medianClockOffsetSec']
