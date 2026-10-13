@@ -37,6 +37,25 @@ const SUSTAIN_WINDOW_SAMPLES = 1536;
  */
 const PITCH_SETTLE_DELAY_SEC = 0.066;
 
+/**
+ * A re-pluck on a ringing string must raise the cycle-integrated 32 ms envelope by at least this
+ * factor (relative to just before the attack transient) within `RE_PLUCK_CONFIRM_SEC`.
+ *
+ * Rationale: the fast 128-sample block RMS swings with the waveform's phase on low notes (one E1
+ * cycle is 24 ms), and clipped notes have sharp edges every cycle, so "block RMS jumped + HF spike"
+ * alone fires false re-plucks ~150 ms into every ringing low note. A real new pluck adds energy,
+ * which only the cycle-safe envelope can see reliably.
+ */
+const RE_PLUCK_ENV_RISE = 1.3;
+const RE_PLUCK_CONFIRM_SEC = 0.045;
+/**
+ * Number of recent blocks (~43 ms at 48 kHz) whose peak sustain envelope serves as the re-pluck
+ * baseline. Clipped low notes make even the 32 ms envelope ripple ±15% per cycle; comparing with
+ * the recent peak (not the previous block, which may sit in a ripple dip) keeps that ripple from
+ * looking like a rise.
+ */
+const RE_PLUCK_BASELINE_BLOCKS = 16;
+
 interface PendingPitchJob {
   readonly rawOnsetTimeSec: number;
   readonly executeAtTimeSec: number;
@@ -67,8 +86,9 @@ export interface AudioBlockAnalysis {
  *      first-difference transient metric (`hfRms` via $s[n] - s[n-1]$), and a slow
  *      32 ms (1,536-sample) cycle-integrated sustain envelope (`sustainEnv`).
  *    - Triggers an onset either from silence (`armedForOnset === true`) or via a
- *      re-pluck on an already-ringing string when a fresh high-frequency transient
- *      spike coincides with an amplitude jump above the decaying sustain floor.
+ *      re-pluck on an already-ringing string: a fresh high-frequency transient spike that is
+ *      confirmed by a real rise of the cycle-safe 32 ms envelope within 45 ms (the onset keeps
+ *      the transient's timestamp).
  * 2. **Stage 2 (Delayed YIN Pitch Lock):**
  *    - Schedules a `PendingPitchJob` for `rawOnsetTimeSec + 66 ms` so YIN evaluates
  *      the settled harmonic fundamental rather than the initial percussive attack.
@@ -90,6 +110,13 @@ export class BassOnsetAnalyzer {
   private minSustainEnv = 0;
   private lastOnsetTimeSec = -10;
   private armedForOnset = true;
+  /** Sustain envelope of the most recent blocks (ring buffer) for the re-pluck baseline. */
+  private readonly recentSustainEnv = new Float32Array(RE_PLUCK_BASELINE_BLOCKS);
+  private recentSustainIdx = 0;
+  /** Time of a high-frequency attack transient on a ringing string awaiting envelope confirmation. */
+  private pendingAttackTimeSec: number | null = null;
+  /** Peak sustain envelope over the ~43 ms before that transient. */
+  private pendingAttackEnv = 0;
 
   private readonly pendingJobs: PendingPitchJob[] = [];
 
@@ -216,6 +243,7 @@ export class BassOnsetAnalyzer {
         this.armedForOnset = true;
         this.notePeakEnv = 0;
         this.minSustainEnv = 0;
+        this.pendingAttackTimeSec = null;
       }
     }
 
@@ -225,36 +253,58 @@ export class BassOnsetAnalyzer {
       activeRms >= this.onsetThreshold &&
       fluxRatio > 1.35;
 
-    // On a ringing string, detect a new pluck when the fast block RMS rises
-    // distinctly above the decayed 32ms sustain floor AND is accompanied by a
-    // sharp high-frequency derivative spike (s[n] - s[n-1]) from the finger/pick attack.
-    const isRePluckOnRingingString =
-      !this.armedForOnset &&
-      timeSinceLastOnset >= 0.16 &&
-      activeRms >= this.onsetThreshold &&
-      this.minSustainEnv < this.notePeakEnv * 0.85 &&
-      (sustainEnv > this.minSustainEnv * 1.65 ||
-        activeRms > this.minSustainEnv * 1.35) &&
+    // On a ringing string, a new pluck shows up as a sharp high-frequency derivative spike
+    // (s[n] - s[n-1]) from the finger/pick attack. Remember it, and confirm it only once the
+    // cycle-safe 32 ms envelope has actually risen; the onset keeps the transient's timestamp.
+    const isAttackTransient =
       hfRms > this.smoothHfRms * 2.1 &&
-      hfRms > 0.0035;
+      hfRms > 0.0035 &&
+      activeRms >= this.onsetThreshold;
+    if (
+      !this.armedForOnset &&
+      this.pendingAttackTimeSec === null &&
+      isAttackTransient &&
+      timeSinceLastOnset >= 0.16
+    ) {
+      this.pendingAttackTimeSec = exactCandidateTimeSec;
+      let recentPeak = 0;
+      for (let k = 0; k < RE_PLUCK_BASELINE_BLOCKS; k++) {
+        recentPeak = Math.max(recentPeak, this.recentSustainEnv[k]);
+      }
+      this.pendingAttackEnv = recentPeak;
+    }
 
+    let rePluckTimeSec: number | null = null;
+    if (!this.armedForOnset && this.pendingAttackTimeSec !== null) {
+      if (sustainEnv >= this.pendingAttackEnv * RE_PLUCK_ENV_RISE) {
+        rePluckTimeSec = this.pendingAttackTimeSec;
+        this.pendingAttackTimeSec = null;
+      } else if (exactCandidateTimeSec - this.pendingAttackTimeSec > RE_PLUCK_CONFIRM_SEC) {
+        this.pendingAttackTimeSec = null;
+      }
+    }
+
+    const onsetTimeSec = isFreshPluckFromSilence ? exactCandidateTimeSec : rePluckTimeSec;
     if (
       !suppressOnsets &&
-      (isFreshPluckFromSilence || isRePluckOnRingingString) &&
-      timeSinceLastOnset >= this.minInterOnsetSec
+      onsetTimeSec !== null &&
+      onsetTimeSec - this.lastOnsetTimeSec >= this.minInterOnsetSec
     ) {
-      this.lastOnsetTimeSec = exactCandidateTimeSec;
+      this.lastOnsetTimeSec = onsetTimeSec;
       this.armedForOnset = false;
+      this.pendingAttackTimeSec = null;
       this.notePeakEnv = Math.max(activeRms, sustainEnv);
       this.minSustainEnv = this.notePeakEnv;
 
       this.pendingJobs.push({
-        rawOnsetTimeSec: exactCandidateTimeSec,
-        executeAtTimeSec: exactCandidateTimeSec + PITCH_SETTLE_DELAY_SEC,
+        rawOnsetTimeSec: onsetTimeSec,
+        executeAtTimeSec: onsetTimeSec + PITCH_SETTLE_DELAY_SEC,
         peakRms: activeRms,
       });
     }
 
+    this.recentSustainEnv[this.recentSustainIdx] = sustainEnv;
+    this.recentSustainIdx = (this.recentSustainIdx + 1) % RE_PLUCK_BASELINE_BLOCKS;
     this.prevRms = activeRms;
     this.smoothHfRms = 0.85 * this.smoothHfRms + 0.15 * hfRms;
 
