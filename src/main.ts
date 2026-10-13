@@ -813,11 +813,27 @@ function bootstrapGrooveLock(): void {
     }
   }
 
+  /** Input samples at or above this are treated as clipping (digital full scale is 1.0). */
+  const CLIP_LEVEL = 0.98;
+  const CLIP_HOLD_MS = 2500;
+  let clippingUntilMs = 0;
+
   function handleMeterSnapshot(snapshot: MeterSnapshot): void {
     dom.meterCh1.style.width = `${Math.min(100, (snapshot.rmsCh0 / 0.2) * 100).toFixed(1)}%`;
     dom.meterCh2.style.width = `${Math.min(100, (snapshot.rmsCh1 / 0.2) * 100).toFixed(1)}%`;
-    dom.peakDbReadout.textContent =
-      snapshot.activeRms > 0.0001 ? `${(20 * Math.log10(snapshot.activeRms)).toFixed(1)} dB` : '−∞ dB';
+    const now = performance.now();
+    if (snapshot.peak >= CLIP_LEVEL) {
+      clippingUntilMs = now + CLIP_HOLD_MS;
+    }
+    const clipping = now < clippingUntilMs;
+    dom.peakDbReadout.textContent = clipping
+      ? 'CLIPPING: turn input gain down'
+      : snapshot.activeRms > 0.0001
+        ? `${(20 * Math.log10(snapshot.activeRms)).toFixed(1)} dB`
+        : '−∞ dB';
+    dom.peakDbReadout.classList.toggle('is-clipping', clipping);
+    dom.setupChip.classList.toggle('is-clipping', clipping);
+    dom.setupChip.title = clipping ? 'Input is clipping: turn the Scarlett gain down' : '';
   }
 
   // ---------------------------------------------------------------------------

@@ -48,6 +48,7 @@ class GrooveLockCaptureProcessor extends AudioWorkletProcessor {
   private readonly loopback = new LoopbackPingDetector();
   private channelMode: InputChannelMode = 'auto';
   private meterBlockCounter = 0;
+  private meterPeak = 0;
   private tunerBlockCounter = 0;
 
   private isRecording = false;
@@ -221,6 +222,7 @@ class GrooveLockCaptureProcessor extends AudioWorkletProcessor {
       this.port.postMessage(outMsg);
     }
 
+    this.meterPeak = Math.max(this.meterPeak, analysis.peakAbs);
     this.meterBlockCounter++;
     this.tunerBlockCounter++;
 
@@ -240,9 +242,11 @@ class GrooveLockCaptureProcessor extends AudioWorkletProcessor {
           rmsCh0: analysis.rmsCh0,
           rmsCh1: analysis.rmsCh1,
           activeRms: analysis.activeRms,
+          peak: this.meterPeak,
           livePitch,
         },
       };
+      this.meterPeak = 0;
       this.port.postMessage(outMsg);
     }
 

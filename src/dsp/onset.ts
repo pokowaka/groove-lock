@@ -72,6 +72,8 @@ export interface AudioBlockAnalysis {
   readonly rmsCh1: number;
   /** RMS amplitude of the selected/active instrument channel. */
   readonly activeRms: number;
+  /** Highest absolute sample of the selected/active channel in this block. */
+  readonly peakAbs: number;
   /** Pluck events whose post-onset YIN pitch evaluation completed during this block. */
   readonly completedPlucks: readonly DetectedPluckEvent[];
 }
@@ -330,6 +332,7 @@ export class BassOnsetAnalyzer {
       rmsCh0,
       rmsCh1,
       activeRms,
+      peakAbs,
       completedPlucks,
     };
   }

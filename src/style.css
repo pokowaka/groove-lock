@@ -721,6 +721,22 @@ kbd {
   background-color: var(--bg-control);
 }
 
+/* ---------- Clipping warning ---------- */
+.field-value.is-clipping {
+  color: var(--accent-miss);
+  font-weight: 700;
+}
+
+.status-chip.is-clipping {
+  border-color: var(--accent-miss);
+  box-shadow: 0 0 0 1px var(--accent-miss) inset;
+}
+
+.status-chip.is-clipping .led-dot {
+  background-color: var(--accent-miss);
+  box-shadow: 0 0 8px var(--accent-miss);
+}
+
 /* ---------- Diagnostics ---------- */
 .diag-steps {
   clear: both;

@@ -88,6 +88,8 @@ export interface MeterSnapshot {
   readonly rmsCh1: number;
   /** Current RMS level of the selected instrument channel. */
   readonly activeRms: number;
+  /** Highest absolute sample on either input since the previous snapshot (1.0 = digital full scale). */
+  readonly peak: number;
   /** Optional continuous tuner pitch readout while a note is sustaining. */
   readonly livePitch: PitchEstimate | null;
 }
