@@ -839,7 +839,7 @@ function bootstrapGrooveLock(): void {
   }
 
   /** Drift (ms) of the input delay since calibration that warrants re-measuring. */
-  const DRIFT_WARN_MS = 8;
+  const DRIFT_WARN_MS = 10;
 
   function renderClockStatus(): void {
     const device = engine.getInputClockDeviceLabel();

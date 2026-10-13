@@ -28,6 +28,7 @@ import {
   type TargetNoteEvent,
 } from '../groove/timeline';
 import { LOOPBACK_PING_SPACING_SEC } from '../dsp/loopback';
+import { type ClockSample, driftContributionMs, MIN_DRIFT_SAMPLES } from './clock-drift';
 import captureWorkletUrl from './capture.worklet.ts?worker&url';
 import { StudioDrumSynth } from './drum-synth';
 
@@ -203,8 +204,10 @@ export class AudioEngine {
   private recordStopResolvers: (() => void)[] = [];
   private diagStopResolvers: (() => void)[] = [];
   private inputClockDeviceLabel: string | null = null;
-  /** Output-input clock offset over time, for drift monitoring (first sample kept as reference). */
-  private clockOffsetSamples: { atMs: number; offsetMs: number }[] = [];
+  /** Latest clock snapshot and the input drift accumulated since the reference point. */
+  private lastClockSample: ClockSample | null = null;
+  private clockSampleCount = 0;
+  private accumulatedDriftMs = 0;
 
   private channelMode: InputChannelMode = 'auto';
   private onsetThreshold = 0.035;
@@ -618,12 +621,16 @@ export class AudioEngine {
     if (ctx.state === 'suspended') {
       await ctx.resume();
     }
-    this.clockOffsetSamples = [];
+    this.lastClockSample = null;
+    this.clockSampleCount = 0;
+    this.accumulatedDriftMs = 0;
   }
 
   /** Restarts drift measurement (call after calibrating latency). */
   public resetDriftBaseline(): void {
-    this.clockOffsetSamples = [];
+    this.lastClockSample = null;
+    this.clockSampleCount = 0;
+    this.accumulatedDriftMs = 0;
   }
 
   /** Label of the device whose clock drives the input context, or `null` if it runs on its own. */
@@ -632,36 +639,29 @@ export class AudioEngine {
   }
 
   /**
-   * How much the output-input clock offset has moved since the input was connected (ms, median of
-   * the latest 10 s vs. the first 10 s). Growth means input samples are piling up in the browser's
-   * buffer, i.e. the input delay has increased by about that much since calibration.
+   * How much the input delay has changed since the last calibration (or connect), in ms; positive
+   * means input arrives later (samples piling up in the browser's buffer), which makes grading late
+   * by that much. Output dropouts are excluded: they shift clicks and conversion equally.
    */
   public getInputDriftMs(): number | null {
-    const samples = this.clockOffsetSamples;
-    if (samples.length < 20) return null;
-    const t0 = samples[0].atMs;
-    const tEnd = samples[samples.length - 1].atMs;
-    const med = (xs: number[]): number => {
-      const sorted = [...xs].sort((a, b) => a - b);
-      return sorted[Math.floor(sorted.length / 2)];
-    };
-    const first = med(samples.filter((x) => x.atMs - t0 <= 10000).map((x) => x.offsetMs));
-    const last = med(samples.filter((x) => tEnd - x.atMs <= 10000).map((x) => x.offsetMs));
-    return last - first;
+    return this.clockSampleCount >= MIN_DRIFT_SAMPLES ? this.accumulatedDriftMs : null;
   }
 
   private recordClockOffset(): void {
     if (!this.outputCtx || !this.inputCtx) return;
     const atMs = performance.now();
-    const lastSample = this.clockOffsetSamples[this.clockOffsetSamples.length - 1];
-    if (lastSample && atMs - lastSample.atMs < 250) return;
-    this.clockOffsetSamples.push({
+    const prev = this.lastClockSample;
+    if (prev && atMs - prev.atMs < 250) return;
+    const sample: ClockSample = {
       atMs,
-      offsetMs: (this.outputCtx.currentTime - this.inputCtx.currentTime) * 1000,
-    });
-    if (this.clockOffsetSamples.length > 20000) {
-      this.clockOffsetSamples.splice(1, 1);
+      outMs: this.outputCtx.currentTime * 1000,
+      inMs: this.inputCtx.currentTime * 1000,
+    };
+    if (prev) {
+      this.accumulatedDriftMs += driftContributionMs(prev, sample);
     }
+    this.lastClockSample = sample;
+    this.clockSampleCount++;
   }
 
   private handleWorkletMessage(msg: WorkletToMainMessage): void {
