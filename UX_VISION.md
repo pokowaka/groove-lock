@@ -425,6 +425,19 @@ Free practice (today's mode) stays available. The Coach is a guide, not a gate.
   `?demo&demoLatency=250` reproduces it. Also added a glossary (§3.0): the big squares are
   **note blocks** in the **lane**.
 
+- **2026-10-12 — Root cause of "+250 ms LATE" found with a diagnostic recording** (Setup →
+  Diagnostics → `.wav` + `.json`, analyzed with `tools/analyze_diagnostics.py`):
+  - Loopback 24 ms and clocks healthy (no drift): the latency theory was wrong for this setup.
+  - The waveform showed the player **on the beat (median −5 ms)**, but the onset detector fired
+    **twice per note**: on the attack (±4 ms) and a phantom ~163 ms later. The "re-pluck on a
+    ringing string" rule compared phase-dependent 128-sample block RMS with the 32 ms envelope, and
+    clipped E1 notes produce HF spikes every cycle. The phantom was graded against the same beat →
+    +150…+230 ms LATE.
+  - Fixed: re-plucks need an HF transient confirmed by a ≥30% rise of the cycle-safe envelope over
+    its recent peak; the grader scores each beat once. Regression tests use three real Scarlett
+    clips (`tests/fixtures`). Replay of the session: duplicates 48 → 0, median +87 → −9 ms.
+  - Input was clipping (peak 1.0): Setup now warns "CLIPPING: turn input gain down".
+
 ### Known gaps / next up
 
 - Step 1 polish after real-instrument testing: tune judgment thresholds, star rules, tip wording.
