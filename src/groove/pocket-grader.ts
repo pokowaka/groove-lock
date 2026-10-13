@@ -64,6 +64,8 @@ const MAX_HISTORY_ENTRIES = 24;
  */
 export class PocketGrader {
   private timelineEvents: TargetNoteEvent[] = [];
+  /** Ids of targets that already received their graded hit (each target is graded once). */
+  private gradedTargetIds = new Set<string>();
   private history: GradedPluckEntry[] = [];
   private offsetsMs: number[] = [];
   private noteMatches = 0;
@@ -80,7 +82,8 @@ export class PocketGrader {
   public pushTargetEvent(event: TargetNoteEvent): void {
     this.timelineEvents.push(event);
     if (this.timelineEvents.length > MAX_TIMELINE_EVENTS) {
-      this.timelineEvents.shift();
+      const dropped = this.timelineEvents.shift();
+      if (dropped) this.gradedTargetIds.delete(dropped.id);
     }
   }
 
@@ -89,6 +92,7 @@ export class PocketGrader {
    */
   public clearTimeline(): void {
     this.timelineEvents = [];
+    this.gradedTargetIds.clear();
     this.resetSpeedTrainerWindow();
   }
 
@@ -154,7 +158,11 @@ export class PocketGrader {
    * to the nearest `TargetNoteEvent`, and records the graded entry relative to
    * `pocketCenterMs ± pocketWindowMs`.
    *
-   * @returns The `GradedPluckEntry`, or `null` if no timeline event is within half a grid step.
+   * Each target is graded at most once: a further pluck whose nearest target already has a hit
+   * (an extra note, or a detector re-trigger) is ignored instead of being scored as very late.
+   *
+   * @returns The `GradedPluckEntry`, or `null` if no timeline event is within half a grid step or
+   *   the nearest target was already graded.
    */
   public evaluatePluck(
     pluck: DetectedPluckEvent,
@@ -186,6 +194,10 @@ export class PocketGrader {
     if (Math.abs(match.offsetMs) > maxCaptureWindowMs) {
       return null;
     }
+    if (this.gradedTargetIds.has(match.target.id)) {
+      return null;
+    }
+    this.gradedTargetIds.add(match.target.id);
 
     const offsetMs = match.offsetMs;
     const feelDeltaMs = offsetMs - pocketCenterMs;

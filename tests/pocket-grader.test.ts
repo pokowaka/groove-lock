@@ -153,6 +153,23 @@ describe('v0.3 Groove Patterns, Reference Bass Guide & Click Placement Modes', (
 });
 
 describe('PocketGrader — Micro-Timing, Feel Offset & Speed Trainer', () => {
+  it('grades each target only once: a second pluck near the same beat is ignored', () => {
+    const grader = new PocketGrader();
+    grader.pushTargetEvent(makeTarget(0, 0, 1.0));
+    grader.pushTargetEvent(makeTarget(0, 1, 1.6));
+    const params = { latencyCompensationMs: 0, bpm: 100, subdivision: 1 as const, pocketWindowMs: 16 };
+
+    const first = grader.evaluatePluck({ rawOnsetTimeSec: 1.005, pitch: null, peakRms: 0.1 }, params);
+    expect(first?.offsetMs).toBeCloseTo(5, 3);
+    // e.g. a false re-trigger or an extra note 180 ms later, still closest to beat 1
+    const extra = grader.evaluatePluck({ rawOnsetTimeSec: 1.185, pitch: null, peakRms: 0.1 }, params);
+    expect(extra).toBeNull();
+    expect(grader.getStats(16).totalHits).toBe(1);
+    // the next beat is still graded normally
+    const second = grader.evaluatePluck({ rawOnsetTimeSec: 1.59, pitch: null, peakRms: 0.1 }, params);
+    expect(second?.offsetMs).toBeCloseTo(-10, 3);
+  });
+
   it('applies latency compensation and classifies pocket, rushing, and dragging plucks', () => {
     const grader = new PocketGrader();
     // 100 BPM quarter notes: 0.6s per beat (t = 1.0, 1.6, 2.2, 2.8)
