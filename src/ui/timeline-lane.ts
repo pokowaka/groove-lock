@@ -25,21 +25,26 @@ interface Flash {
   readonly startMs: number;
 }
 
+/** The most recent graded hit on a step. */
+interface LastHit {
+  readonly feelDeltaMs: number;
+  readonly judgment: HitJudgment;
+  readonly atMs: number;
+}
+
 const FLASH_DURATION_MS = 320;
 const MAX_QUEUED_BARS = 6;
-/** Minimum hits on a step before its block shows an average tendency. */
-export const HEAT_MIN_HITS = 3;
-/** Average deviations within this fraction of the pocket window count as "on it". */
-const ON_IT_FRACTION = 0.5;
+/** A hit older than this many bars (while playing) is drawn dimmed: that note was missed since. */
+const STALE_AFTER_BARS = 1.05;
 
 /**
- * Real-time canvas view of one bar: note blocks sized by duration with note names, per-step
- * average-tendency labels and tint, hit flashes, count-in digits, LISTEN / SILENT overlays, and an
- * optional position guide synced to the audio clock. This is the fixed-bar first incarnation of
- * the scrolling note highway.
+ * Real-time canvas view of one bar: note blocks sized by duration with note names, how early /
+ * late / on time your most recent hit on each note was (signed ms + word + tint), hit flashes,
+ * count-in digits, LISTEN / SILENT overlays, and an optional position guide synced to the audio
+ * clock. This is the fixed-bar first incarnation of the scrolling note highway.
  *
- * Data flow: the controller pushes bar schedules (`pushBar`), hits (`recordHit`) and per-step
- * tendencies (`setHeat`); the lane redraws itself every animation frame, reading the audio clock.
+ * Data flow: the controller pushes bar schedules (`pushBar`) and graded hits (`recordHit`); the
+ * lane redraws itself every animation frame, reading the audio clock.
  */
 export class TimelineLane {
   private readonly canvas: HTMLCanvasElement;
@@ -47,7 +52,7 @@ export class TimelineLane {
 
   private steps: readonly PatternStepDescriptor[] = [];
   private noteLabels: readonly string[] = [];
-  private heatMs: (number | null)[] = [];
+  private lastHits: (LastHit | null)[] = [];
   private flashes = new Map<number, Flash>();
   private bars: LaneBar[] = [];
   private pocketWindowMs = 16;
@@ -73,7 +78,7 @@ export class TimelineLane {
   }
 
   /**
-   * Replaces the bar layout. Tendencies are cleared when the step grid changes.
+   * Replaces the bar layout. Last hits are cleared when the step grid changes.
    *
    * @param steps Steps of one bar.
    * @param noteLabels Note name per step (empty string for none).
@@ -85,7 +90,7 @@ export class TimelineLane {
     const signature = (s: readonly PatternStepDescriptor[]): string =>
       s.map((x) => `${x.durationBeats}:${x.isTargetActive ? 1 : 0}`).join('|');
     if (signature(steps) !== signature(this.steps)) {
-      this.heatMs = steps.map(() => null);
+      this.lastHits = steps.map(() => null);
       this.flashes.clear();
     }
     this.steps = steps;
@@ -121,24 +126,22 @@ export class TimelineLane {
     this.bars = [];
   }
 
-  /** Flashes a step's block in the color of the hit's judgment. */
-  public recordHit(stepIndex: number, judgment: HitJudgment): void {
+  /**
+   * Shows a graded hit on its step (replacing the previous one) and flashes the block.
+   *
+   * @param feelDeltaMs Signed offset from the feel target (negative = early).
+   */
+  public recordHit(stepIndex: number, feelDeltaMs: number, judgment: HitJudgment): void {
     if (stepIndex < 0 || stepIndex >= this.steps.length) {
       return;
     }
-    this.flashes.set(stepIndex, {
-      color: judgmentColor(judgment),
-      startMs: performance.now(),
-    });
-  }
-
-  /** Sets the average feel delta per step (`null` = not enough data yet). */
-  public setHeat(heatMs: readonly (number | null)[]): void {
-    this.heatMs = [...heatMs];
+    const now = performance.now();
+    this.lastHits[stepIndex] = { feelDeltaMs, judgment, atMs: now };
+    this.flashes.set(stepIndex, { color: judgmentColor(judgment), startMs: now });
   }
 
   public resetHits(): void {
-    this.heatMs = this.steps.map(() => null);
+    this.lastHits = this.steps.map(() => null);
     this.flashes.clear();
   }
 
@@ -257,15 +260,19 @@ export class TimelineLane {
       return;
     }
 
-    const heat = this.heatMs[idx] ?? null;
-    const tendency = heat === null ? null : this.classifyTendency(heat);
+    const hit = this.lastHits[idx] ?? null;
+    const timing = hit ? this.classify(hit) : null;
+    // While playing, a hit older than about one bar means this note was missed since: dim it.
+    const barMs = this.currentBarDurationMs();
+    const fresh = hit !== null && (barMs === null || nowMs - hit.atMs <= barMs * STALE_AFTER_BARS);
+    const fade = fresh ? 1 : 0.35;
     let fill = withAlpha(PALETTE.amber, 0.1);
     let stroke = withAlpha(PALETTE.amber, 0.55);
-    if (tendency !== null && heat !== null) {
-      const strength = Math.min(1, Math.abs(heat) / (this.pocketWindowMs * 1.5));
-      const base = tendency === 'on' ? PALETTE.pocket : tendency === 'early' ? PALETTE.rush : PALETTE.drag;
-      fill = withAlpha(base, tendency === 'on' ? 0.14 : 0.08 + strength * 0.22);
-      stroke = withAlpha(base, tendency === 'on' ? 0.7 : 0.5 + strength * 0.4);
+    if (hit && timing) {
+      const strength = Math.min(1, Math.abs(hit.feelDeltaMs) / (this.pocketWindowMs * 1.5));
+      const base = timing === 'on' ? judgmentColor(hit.judgment) : timing === 'early' ? PALETTE.rush : PALETTE.drag;
+      fill = withAlpha(base, (timing === 'on' ? 0.16 : 0.1 + strength * 0.22) * fade);
+      stroke = withAlpha(base, (timing === 'on' ? 0.75 : 0.55 + strength * 0.4) * Math.max(fade, 0.5));
     }
 
     roundRectPath(ctx, bx, top, bw, height, 8);
@@ -310,36 +317,44 @@ export class TimelineLane {
       ctx.fillStyle = PALETTE.textPrimary;
       const size = Math.min(26, Math.max(12, bw / 3.2), height / 4);
       ctx.font = `700 ${size}px ${FONTS.mono}`;
-      ctx.fillText(label, cx, top + height * (tendency ? 0.36 : 0.5));
+      ctx.fillText(label, cx, top + height * (timing ? 0.36 : 0.5));
     }
 
-    if (tendency !== null && heat !== null) {
-      // Average timing on this note: a signed number (same convention as the "Last note" readout,
-      // negative = early) plus a plain word, so it can't be misread as a direction to move.
+    if (hit && timing) {
+      // How this note just landed: a signed number (same convention as the "Last note" readout,
+      // negative = early) plus a plain word.
       const color =
-        tendency === 'on' ? PALETTE.locked : tendency === 'early' ? PALETTE.rush : PALETTE.drag;
-      const word = tendency === 'on' ? 'ON TIME' : tendency === 'early' ? 'EARLY' : 'LATE';
-      const ms = Math.round(Math.abs(heat));
-      const sign = tendency === 'early' ? '−' : '+';
-      const roomy = bw >= 92;
-      const main = tendency === 'on' ? '✓' : `${sign}${ms}${roomy ? ' ms' : ''}`;
+        timing === 'on' ? judgmentColor(hit.judgment) : timing === 'early' ? PALETTE.rush : PALETTE.drag;
+      const word = timing === 'on' ? 'ON TIME' : timing === 'early' ? 'EARLY' : 'LATE';
+      const ms = Math.round(Math.abs(hit.feelDeltaMs));
+      const sign = ms === 0 ? '±' : hit.feelDeltaMs < 0 ? '−' : '+';
+      const main = `${sign}${ms}${bw >= 92 ? ' ms' : ''}`;
 
       const centerY = top + height * (label ? 0.64 : 0.5);
-      const mainSize = Math.min(tendency === 'on' ? 34 : 22, Math.max(12, bw / (tendency === 'on' ? 3 : 4)), height / 5);
+      const mainSize = Math.min(24, Math.max(12, bw / 4), height / 5);
       const wordSize = Math.min(13, Math.max(9, bw / 7));
+      ctx.globalAlpha = fade;
       ctx.fillStyle = color;
       ctx.font = `700 ${mainSize}px ${FONTS.mono}`;
       ctx.fillText(main, cx, centerY - wordSize * 0.6);
       ctx.font = `700 ${wordSize}px ${FONTS.sans}`;
       ctx.fillText(word, cx, centerY + mainSize * 0.55 + 2);
+      ctx.globalAlpha = 1;
     }
   }
 
-  private classifyTendency(heatMs: number): 'on' | 'early' | 'late' {
-    if (Math.abs(heatMs) <= this.pocketWindowMs * ON_IT_FRACTION) {
+  /** On time = inside the pocket window (same rule as the grader). */
+  private classify(hit: LastHit): 'on' | 'early' | 'late' {
+    if (hit.judgment === 'locked' || hit.judgment === 'pocket') {
       return 'on';
     }
-    return heatMs < 0 ? 'early' : 'late';
+    return hit.feelDeltaMs < 0 ? 'early' : 'late';
+  }
+
+  /** Duration of the most recently scheduled bar, or `null` when not playing. */
+  private currentBarDurationMs(): number | null {
+    const last = this.bars[this.bars.length - 1];
+    return last ? last.info.durationSec * 1000 : null;
   }
 
   private drawPhaseOverlay(

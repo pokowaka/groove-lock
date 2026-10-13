@@ -97,13 +97,12 @@ import {
 import { bindSegmented, DrawerController, type SegmentedControl } from './ui/controls';
 import { DemoPlayer } from './ui/demo-player';
 import { PocketMeter } from './ui/pocket-meter';
-import { HEAT_MIN_HITS, type LanePhase, TimelineLane } from './ui/timeline-lane';
+import { type LanePhase, TimelineLane } from './ui/timeline-lane';
 
 const MIN_BPM = 40;
 const MAX_BPM = 200;
 const AUTO_CONTINUE_SEC = 6;
 const SESSION_HISTORY_LIMIT = 400;
-const STEP_HEAT_WINDOW = 16;
 
 const GROOVE_TIER_LABELS: Readonly<Record<GrooveTier, string>> = {
   machine: 'Machine',
@@ -312,7 +311,6 @@ function bootstrapGrooveLock(): void {
   let currentBarExpectedNote: TargetNoteEvent['expectedNote'] =
     computeBarTarget(profile.drillMode, 0).targetNote;
   let sessionOffsetsMs: number[] = [];
-  let stepFeelHistory = new Map<string, number[]>();
 
   let isRoundActive = false;
   let roundHits: RoundHit[] = [];
@@ -622,7 +620,6 @@ function bootstrapGrooveLock(): void {
   function rebuildLane(): void {
     laneSteps = resolvePatternBarSteps(profile.groovePattern, profile.subdivision);
     lane.setSteps(laneSteps, noteLabelsFor(laneSteps, currentBarExpectedNote));
-    stepFeelHistory = new Map();
     const disabled = profile.groovePattern !== 'uniform';
     segmented.get('subdivision')?.setDisabled(disabled);
     dom.subdivisionHelp.hidden = !disabled;
@@ -1660,21 +1657,11 @@ function bootstrapGrooveLock(): void {
       sessionOffsetsMs.shift();
     }
 
-    const history = stepFeelHistory.get(key) ?? [];
-    history.push(entry.feelDeltaMs);
-    stepFeelHistory.set(key, history.slice(-STEP_HEAT_WINDOW));
-
     const stepIndex = laneSteps.findIndex(
       (s) => s.beatInBar === t.beatInBar && s.subIndex === t.subIndex,
     );
     if (stepIndex >= 0) {
-      lane.recordHit(stepIndex, judgment);
-      lane.setHeat(
-        laneSteps.map((s) => {
-          const h = stepFeelHistory.get(stepKeyOf(s.beatInBar, s.subIndex));
-          return h && h.length >= HEAT_MIN_HITS ? h.reduce((a, v) => a + v, 0) / h.length : null;
-        }),
-      );
+      lane.recordHit(stepIndex, entry.feelDeltaMs, judgment);
     }
     pocketMeter.addHit({ offsetMs: entry.offsetMs, judgment });
 
@@ -1736,7 +1723,6 @@ function bootstrapGrooveLock(): void {
     grader.resetStats();
     streak.reset();
     sessionOffsetsMs = [];
-    stepFeelHistory = new Map();
     lane.resetHits();
     pocketMeter.clear();
     dom.lastOffset.textContent = '—';
