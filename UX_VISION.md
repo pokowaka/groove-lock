@@ -61,14 +61,14 @@ that grows with the roadmap:
 
 | Feature | Encoding on the lane |
 |---|---|
-| v0.3 timing offset | Per-note average label (`✓` / `← 12 ms` / `9 ms →`), tint, hit flash. _No in-block gauge: playtested as confusing._ |
+| v0.3 timing offset | How your **last hit** on each note landed: signed ms + EARLY / ON TIME / LATE, tint, hit flash; dims if missed on the next pass. _Not averages (not meaningful while playing), no arrows (read as directions), no in-block gauge (confusing)._ |
 | v0.3 pocket feel | Labels/tint are relative to the feel target (+12 / −8 ms) |
 | v0.4 note-off / gate length | Tail length on the hit vs. target block length |
 | v0.4 dynamics / evenness | Tick height / brightness |
 | v0.4 ghost notes | `X` blocks |
 | v0.5 chord tones | Chord-symbol lane above; degree labels (R/3/5/7) in blocks |
 | v0.6 highway | Same lane, scrolling mode instead of fixed-bar mode |
-| v0.7 per-beat heatmap | Block tint by mean offset per step |
+| v0.7 per-beat heatmap | Per-note averages belong in Review / results, not the live lane |
 
 **Rule:** build the step strip _as_ the first incarnation of the highway (fixed bar now, scroll mode
 later) so no work is thrown away. **Position guides must not be predictive by default** (beat glow,
@@ -392,6 +392,14 @@ Free practice (today's mode) stays available. The Coach is a guide, not a gate.
     rounds, 3★ count) and every drill's best level pips / mastered state; reset button.
   - Still open from C2: detectors for off-beats vs. downbeats, notes after rests and tempo
     dependence need new drill capabilities (C5) to be actionable.
+
+- **2026-10-12 (playtest)** — Lane block labels:
+  - _"What do the arrows mean?"_ → `← 12` read like "move left". Replaced with a signed number
+    (same sign as the Last note readout) plus a word: `−12 EARLY`, `+9 LATE`, `ON TIME`.
+  - _"The block should show how early/late/on time you were when you played it; the average isn't
+    meaningful while playing."_ → Blocks now show the **most recent hit** on that note, updating
+    every pass; the value dims if the note was missed on the next pass. Per-note averages remain
+    in the Coach (results card) where they drive the diagnosis.
 
 ### Known gaps / next up
 
