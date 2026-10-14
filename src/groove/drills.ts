@@ -8,6 +8,7 @@ import {
   type SoundEngineMode,
   type SpeedTrainerStep,
 } from './patterns';
+import { type ReleaseHit, type ReleaseSummary, summarizeReleases } from './release-grading';
 import type { Rhythm } from './rhythm';
 import {
   aggregateByStep,
@@ -35,7 +36,8 @@ export type DrillId =
   | 'odd-spot'
   | 'displacement'
   | 'groups-over-4'
-  | 'strange-rhythms';
+  | 'strange-rhythms'
+  | 'note-length';
 
 /** The subset of practice settings a drill controls. */
 export interface DrillSettings {
@@ -108,6 +110,7 @@ export const DRILL_TITLES: Readonly<Record<DrillId, string>> = {
   displacement: 'Displacement',
   'groups-over-4': 'Groups Over 4',
   'strange-rhythms': 'Strange Rhythms',
+  'note-length': 'Note Length',
 };
 
 const MIN_BPM = 50;
@@ -117,6 +120,7 @@ const MIN_HITS_FOR_BIAS = 8;
 const MIN_HITS_PER_FOCUS_STEP = 3;
 const MIN_HITS_PER_CLICK_GROUP = 6;
 const MISSED_NOTES_RATIO = 0.75;
+const MIN_RELEASES_FOR_LENGTH = 8;
 
 function clampBpm(bpm: number): number {
   return Math.min(MAX_BPM, Math.max(MIN_BPM, Math.round(bpm)));
@@ -146,7 +150,13 @@ function pocketRate(hits: readonly RoundHit[]): number {
 export function recommendDrill(
   summary: RoundSummary,
   hits: readonly RoundHit[],
-  opts: { pocketWindowMs: number; expectedTargetCount: number; mastered?: ReadonlySet<DrillId> },
+  opts: {
+    pocketWindowMs: number;
+    expectedTargetCount: number;
+    mastered?: ReadonlySet<DrillId>;
+    /** Graded note lengths of the evidence, when the rhythm grades them. */
+    releases?: ReleaseSummary;
+  },
 ): DrillRecommendation | null {
   const w = opts.pocketWindowMs;
   if (hits.length === 0 || summary.meanFeelDeltaMs === null) {
@@ -217,6 +227,19 @@ export function recommendDrill(
       drillId: 'steady-quarters',
       focusStep: null,
       reason: `Centered, but uneven (spread ${summary.sigmaMs.toFixed(0)} ms). Let's strip it back to plain quarter notes and make every note land the same.`,
+    };
+  }
+
+  const rel = opts.releases;
+  if (rel && rel.count >= MIN_RELEASES_FOR_LENGTH && rel.onTimePct < 60 && rel.meanDeltaMs !== null) {
+    const ms = Math.round(Math.abs(rel.meanDeltaMs));
+    return {
+      drillId: 'note-length',
+      focusStep: null,
+      reason:
+        rel.meanDeltaMs < 0
+          ? `Your timing is fine, but you cut notes short by ${ms} ms on average. Let's practice ending each note right where it's written.`
+          : `Your timing is fine, but you let notes ring ${ms} ms too long on average. Let's practice muting each note right where it's written.`,
     };
   }
 
@@ -362,6 +385,8 @@ export function buildDrillPlan(
     case 'groups-over-4':
     case 'strange-rhythms':
       return buildOffGridPlan(drillId, common, base.bpm);
+    case 'note-length':
+      return buildNoteLengthPlan(common, base.bpm);
     case 'ghost-drummer':
       return {
         drillId,
@@ -527,6 +552,74 @@ function buildOffGridPlan(
 }
 
 // ---------------------------------------------------------------------------
+// Note Length ladder
+// ---------------------------------------------------------------------------
+
+/**
+ * Same kind of notes, different written lengths: the player has to end (mute) each note where it
+ * is written. Lengths are graded, so every rhythm sets `gradeLengths`.
+ */
+function buildNoteLengthPlan(common: DrillSettings, baseBpm: number): DrillPlan {
+  const start = clampBpm(Math.min(baseBpm, 100) * 0.8);
+  const up = clampBpm(start + 8);
+  const graded = (bars: string[], subdivision: Subdivision = 4): Rhythm => ({
+    subdivision,
+    bars,
+    gradeLengths: true,
+  });
+  const motown = { ...regridRhythm(rhythmForPattern('motown-pocket', 1), 4), gradeLengths: true };
+  const funk = rhythmForPattern('funk-16th', 1);
+  const steps: ReadonlyArray<readonly [string, Rhythm, number, number]> = [
+    ['Quarters, held full length', graded(['x---x---x---x---']), start, 25],
+    ['Quarters, cut to 8ths', graded(['x-..x-..x-..x-..']), start, 25],
+    ['Short 16ths on the beat', graded(['x...x...x...x...']), start, 25],
+    ['Half notes', graded(['x-------x-------']), start, 25],
+    ['Short, long, short, long', graded(['x-..x---x-..x---']), start, 25],
+    ['Long bar, short bar', graded(['x---x---x---x---', 'x-..x-..x-..x-..']), start, 25],
+    ['Motown lengths', motown, start, 25],
+    ['Funk lengths', funk, start, 25],
+    ['Funk lengths', funk, up, 16],
+  ];
+  return {
+    drillId: 'note-length',
+    title: DRILL_TITLES['note-length'],
+    goal: "End every note where it's written: mute it on time. The bar under each block shows how long you held it.",
+    focusStep: null,
+    levels: steps.map(([label, rhythm, bpm, windowMs]) => {
+      const settings: DrillSettings = {
+        ...common,
+        customRhythm: rhythm,
+        clickPlacement: 'beats',
+        gapBars: 0,
+        pocketCenterMs: 0,
+        drillMode: 'free',
+        roundBars: OFF_GRID_ROUND_BARS,
+        bassGuideMode: 'off',
+        bpm,
+        pocketWindowMs: windowMs,
+      };
+      return { settings, label: `${label} · ${bpm} BPM · ±${windowMs} ms` };
+    }),
+  };
+}
+
+/**
+ * Note Length rounds need both: notes that start in the pocket and end on time. Fail = < 60% in
+ * the pocket or < 50% of lengths on time; pass = ≥ 70% and ≥ 75%. Neutral when too few releases
+ * were heard to judge.
+ */
+export function judgeNoteLengthRound(
+  summary: RoundSummary,
+  releases: ReleaseSummary,
+  expectedTargetCount: number,
+): DrillVerdict {
+  if (summary.inPocketPct < 60) return 'fail';
+  if (releases.count < Math.max(4, expectedTargetCount * 0.5)) return 'neutral';
+  if (releases.onTimePct < 50) return 'fail';
+  return summary.inPocketPct >= 70 && releases.onTimePct >= 75 ? 'pass' : 'neutral';
+}
+
+// ---------------------------------------------------------------------------
 // Judging & staircase
 // ---------------------------------------------------------------------------
 
@@ -615,9 +708,19 @@ export interface FocusMeasurement {
 /**
  * The one number each drill is trying to improve, used for "before → now" comparisons.
  */
-export function measureFocus(plan: DrillPlan, hits: readonly RoundHit[]): FocusMeasurement {
+export function measureFocus(
+  plan: DrillPlan,
+  hits: readonly RoundHit[],
+  releases: readonly ReleaseHit[] = [],
+): FocusMeasurement {
   const round1 = (v: number): number => Math.round(v * 10) / 10;
   switch (plan.drillId) {
+    case 'note-length':
+      return {
+        label: 'Note lengths on time',
+        value: releases.length > 0 ? summarizeReleases(releases).onTimePct : null,
+        unit: '%',
+      };
     case 'spot-fix': {
       if (plan.focusStep) {
         const focus = hits.filter((h) => h.stepKey === plan.focusStep?.key);

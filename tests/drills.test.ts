@@ -5,10 +5,12 @@ import {
   DRILL_SETTING_KEYS,
   type DrillSettings,
   judgeDrillRound,
+  judgeNoteLengthRound,
   measureFocus,
   recommendDrill,
   startStaircase,
 } from '../src/groove/drills';
+import { summarizeReleases } from '../src/groove/release-grading';
 import { parseRhythm, type Rhythm } from '../src/groove/rhythm';
 import { type RoundHit, summarizeRound } from '../src/groove/scoring';
 
@@ -265,6 +267,56 @@ describe('Off the Grid drills', () => {
       const fast = buildDrillPlan(id, BASE, null).levels;
       expect(fast[fast.length - 1].settings.bpm).toBeGreaterThan(fast[0].settings.bpm);
     }
+  });
+});
+
+describe('Note Length drill', () => {
+  it('writes every level with graded lengths and works from simple to mixed lengths', () => {
+    const levels = buildDrillPlan('note-length', BASE, null).levels;
+    expect(levels.length).toBeGreaterThanOrEqual(6);
+    for (const level of levels) {
+      expect(level.settings.customRhythm?.gradeLengths).toBe(true);
+      expect(level.settings.clickPlacement).toBe('beats');
+    }
+    expect(levels.some((l) => (l.settings.customRhythm?.bars.length ?? 0) >= 2)).toBe(true);
+  });
+
+  const roundOf = (n: number) => summarizeRound(spread(n, [1, -2, 3, -1]), { pocketWindowMs: W, expectedTargetCount: n });
+  const releases = (onTime: number, short: number) =>
+    summarizeReleases([
+      ...Array.from({ length: onTime }, () => ({ stepKey: '0:0', stepName: '1', deltaMs: 5, judgment: 'on-time' as const })),
+      ...Array.from({ length: short }, () => ({ stepKey: '0:0', stepName: '1', deltaMs: -60, judgment: 'short' as const })),
+    ]);
+
+  it('passes only when the notes start and end on time', () => {
+    expect(judgeNoteLengthRound(roundOf(16), releases(14, 2), 16)).toBe('pass');
+    expect(judgeNoteLengthRound(roundOf(16), releases(6, 10), 16)).toBe('fail');
+    expect(judgeNoteLengthRound(roundOf(16), releases(10, 6), 16)).toBe('neutral');
+  });
+
+  it('cannot judge lengths it did not hear', () => {
+    expect(judgeNoteLengthRound(roundOf(16), releases(2, 0), 16)).toBe('neutral');
+  });
+
+  it('is recommended when note lengths are off but timing is fine', () => {
+    const hits = spread(16, [1, -1, 2, -2]);
+    const summary = summarizeRound(hits, { pocketWindowMs: W, expectedTargetCount: 16 });
+    const rec = recommendDrill(summary, hits, {
+      pocketWindowMs: W,
+      expectedTargetCount: 16,
+      releases: releases(4, 10),
+    });
+    expect(rec?.drillId).toBe('note-length');
+    expect(rec?.reason).toMatch(/short/);
+  });
+
+  it('measures note lengths on time as its focus', () => {
+    const plan = buildDrillPlan('note-length', BASE, null);
+    const m = measureFocus(plan, spread(8, [0]), [
+      { stepKey: '0:0', stepName: '1', deltaMs: 5, judgment: 'on-time' },
+      { stepKey: '0:0', stepName: '1', deltaMs: -50, judgment: 'short' },
+    ]);
+    expect(m).toEqual({ label: 'Note lengths on time', value: 50, unit: '%' });
   });
 });
 

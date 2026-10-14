@@ -38,7 +38,10 @@ describe('the Time Path', () => {
 
   it('moves on once a drill is completed, skipping stages with nothing to play yet', () => {
     expect(nextUp({ 'steady-quarters': once })?.drillId).toBe('ghost-drummer');
-    expect(nextUp({ 'steady-quarters': once, 'ghost-drummer': once })?.drillId).toBe('odd-spot');
+    expect(nextUp({ 'steady-quarters': once, 'ghost-drummer': once })?.drillId).toBe('note-length');
+    expect(
+      nextUp({ 'steady-quarters': once, 'ghost-drummer': once, 'note-length': once })?.drillId,
+    ).toBe('odd-spot');
   });
 
   it('comes back for mastery (a second day) when everything open is completed once', () => {
@@ -59,7 +62,7 @@ describe('the Time Path', () => {
     expect(stageState(stage('off-grid'), {})).toBe('later');
     expect(stageState(stage('pulse'), { 'steady-quarters': once })).toBe('completed');
     expect(stageState(stage('pulse'), { 'steady-quarters': mastered })).toBe('mastered');
-    const ready = { 'steady-quarters': once, 'ghost-drummer': once };
+    const ready = { 'steady-quarters': once, 'ghost-drummer': once, 'note-length': once };
     expect(stageState(stage('off-grid'), ready)).toBe('open');
     expect(stageState(stage('off-grid'), { ...ready, 'odd-spot': completedOn() })).toBe('started');
   });

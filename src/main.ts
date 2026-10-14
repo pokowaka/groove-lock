@@ -47,6 +47,7 @@ import {
   type DrillVerdict,
   type FocusMeasurement,
   judgeDrillRound,
+  judgeNoteLengthRound,
   measureFocus,
   recommendDrill,
   type StaircaseEvent,
@@ -377,6 +378,7 @@ function bootstrapGrooveLock(): void {
     readonly rec: DrillRecommendation;
     readonly summary: RoundSummary;
     readonly hits: readonly RoundHit[];
+    readonly releases: readonly ReleaseHit[];
   } | null = null;
   // Coach memory
   let roundHistory: RoundRecord[] = loadHistory(window.localStorage);
@@ -995,9 +997,12 @@ function bootstrapGrooveLock(): void {
       pocketWindowMs: profile.pocketWindowMs,
       expectedTargetCount: pooled.expected,
       mastered: masteredDrills(coachProgress),
+      releases: roundReleases.length > 0 ? summarizeReleases(roundReleases) : undefined,
     });
     pendingRecommendation =
-      rec && !latencyIssue ? { rec, summary: pooledSummary, hits: pooled.hits } : null;
+      rec && !latencyIssue
+        ? { rec, summary: pooledSummary, hits: pooled.hits, releases: [...roundReleases] }
+        : null;
 
     let compare: string | null = null;
     if (transferBaseline) {
@@ -1251,7 +1256,7 @@ function bootstrapGrooveLock(): void {
       staircase: startStaircase(entry),
       savedSettings: saved,
       baselineSummary: pending.summary,
-      baselineFocus: measureFocus(plan, pending.hits),
+      baselineFocus: measureFocus(plan, pending.hits, pending.releases),
       isComplete: false,
     };
     pendingRecommendation = null;
@@ -1321,10 +1326,13 @@ function bootstrapGrooveLock(): void {
   };
 
   function completeDrillRound(drill: ActiveDrill, summary: RoundSummary): void {
-    const verdict = judgeDrillRound(summary, roundHits, {
-      pocketWindowMs: profile.pocketWindowMs,
-      focusStepKey: drill.plan.focusStep?.key ?? null,
-    });
+    const verdict =
+      drill.plan.drillId === 'note-length'
+        ? judgeNoteLengthRound(summary, summarizeReleases(roundReleases), roundExpectedTargets)
+        : judgeDrillRound(summary, roundHits, {
+            pocketWindowMs: profile.pocketWindowMs,
+            focusStepKey: drill.plan.focusStep?.key ?? null,
+          });
     const { state, event } = advanceStaircase(drill.staircase, verdict, drill.plan.levels.length);
     drill.staircase = state;
     drill.isComplete = event === 'complete';
@@ -1351,7 +1359,7 @@ function bootstrapGrooveLock(): void {
     };
     dom.resultsTitle.textContent = titles[event];
 
-    const now = measureFocus(drill.plan, roundHits);
+    const now = measureFocus(drill.plan, roundHits, roundReleases);
     const compare = drill.baselineFocus
       ? `${now.label}: ${formatFocus(drill.baselineFocus)} → ${formatFocus(now)}`
       : `${now.label}: ${formatFocus(now)}`;

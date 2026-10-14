@@ -70,7 +70,12 @@ export const TIME_PATH: readonly PathStage[] = [
     skill: 'Keep time through rests and with less click.',
     boss: 'Reggae one drop',
     after: ['subdivision'],
-    items: [drill('Ghost Drummer', 'ghost-drummer'), soon('Wait for It'), soon('Backbeat Bounce')],
+    items: [
+      drill('Ghost Drummer', 'ghost-drummer'),
+      drill('Note Length', 'note-length'),
+      soon('Wait for It'),
+      soon('Backbeat Bounce'),
+    ],
   },
   {
     id: 'off-grid',
