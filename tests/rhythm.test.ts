@@ -93,6 +93,19 @@ describe('rhythm masks', () => {
 });
 
 describe('graded note lengths', () => {
+  it('lets the reference bass play graded lengths almost exactly, so the demo is the model', () => {
+    const steps = resolveRhythmBarSteps({ subdivision: 4, bars: ['x-..x---x...x---'], gradeLengths: true }, 0);
+    for (const s of steps.filter((x) => x.isTargetActive)) {
+      expect(s.gateBeats).toBeGreaterThanOrEqual(s.lengthBeats * 0.95);
+      expect(s.gateBeats).toBeLessThan(s.lengthBeats);
+    }
+  });
+
+  it('keeps the mark-releases flag through storage', () => {
+    const r = rhythmFromStorage({ subdivision: 4, bars: ['x-..x-..x-..x-..'], gradeLengths: true, markReleases: true });
+    expect(r?.markReleases).toBe(true);
+  });
+
   it('grades lengths only where they are written on purpose', () => {
     expect(rhythmForPattern('motown-pocket', 1).gradeLengths).toBe(true);
     expect(rhythmForPattern('funk-16th', 1).gradeLengths).toBe(true);

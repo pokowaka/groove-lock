@@ -89,6 +89,8 @@ export interface DrillRecommendation {
 export interface DrillLevel {
   /** Short description of what this level asks for (e.g. "80 BPM · ±16 ms"). */
   readonly label: string;
+  /** What to do, in plain musical words (shown instead of the drill goal when set). */
+  readonly hint?: string;
   readonly settings: DrillSettings;
 }
 
@@ -562,30 +564,35 @@ function buildOffGridPlan(
 function buildNoteLengthPlan(common: DrillSettings, baseBpm: number): DrillPlan {
   const start = clampBpm(Math.min(baseBpm, 100) * 0.8);
   const up = clampBpm(start + 8);
-  const graded = (bars: string[], subdivision: Subdivision = 4): Rhythm => ({
-    subdivision,
+  const graded = (bars: string[], markReleases = false): Rhythm => ({
+    subdivision: 4,
     bars,
     gradeLengths: true,
+    ...(markReleases ? { markReleases: true } : {}),
   });
   const motown = { ...regridRhythm(rhythmForPattern('motown-pocket', 1), 4), gradeLengths: true };
   const funk = rhythmForPattern('funk-16th', 1);
-  const steps: ReadonlyArray<readonly [string, Rhythm, number, number]> = [
-    ['Quarters, held full length', graded(['x---x---x---x---']), start, 25],
-    ['Quarters, cut to 8ths', graded(['x-..x-..x-..x-..']), start, 25],
-    ['Short 16ths on the beat', graded(['x...x...x...x...']), start, 25],
-    ['Half notes', graded(['x-------x-------']), start, 25],
-    ['Short, long, short, long', graded(['x-..x---x-..x---']), start, 25],
-    ['Long bar, short bar', graded(['x---x---x---x---', 'x-..x-..x-..x-..']), start, 25],
-    ['Motown lengths', motown, start, 25],
-    ['Funk lengths', funk, start, 25],
-    ['Funk lengths', funk, up, 16],
+  const eighths = ['x-..x-..x-..x-..'];
+  const sixteenths = ['x...x...x...x...'];
+  // [label, hint, rhythm, bpm, window]
+  const steps: ReadonlyArray<readonly [string, string, Rhythm, number, number]> = [
+    ['Quarters, held full', 'Hold each note a full beat: let it ring until you play the next one.', graded(['x---x---x---x---']), start, 25],
+    ['8ths, with a let-go click', 'Play on the beat, let go on the "&". The soft click marks the "&": mute exactly on it.', graded(eighths, true), start, 25],
+    ['8ths, no click', 'Same again, without the let-go click: play on the beat, mute on the "&".', graded(eighths), start, 25],
+    ['Short 16ths, with a click', 'Very short: let go on the "e", right after the beat. The soft click marks it.', graded(sixteenths, true), start, 25],
+    ['Short 16ths, no click', 'Very short notes again, now without the click: mute right after the beat.', graded(sixteenths), start, 25],
+    ['Short, long, short, long', 'Beat 1 short (let go on the "&"), beat 2 long (hold the full beat), and so on.', graded(['x-..x---x-..x---']), start, 25],
+    ['Long bar, short bar', 'Bar 1: hold every note a full beat. Bar 2: let go on every "&".', graded(['x---x---x---x---', 'x-..x-..x-..x-..']), start, 25],
+    ['Motown lengths', 'Beat 1 rings through beat 2; the 2-& pickup is short; beats 3 and 4 ring a full beat.', motown, start, 25],
+    ['Funk lengths', 'Funk is mostly short: copy the lengths you hear in the first bar.', funk, start, 25],
+    ['Funk lengths', 'Funk lengths at a faster tempo, tighter.', funk, up, 16],
   ];
   return {
     drillId: 'note-length',
     title: DRILL_TITLES['note-length'],
     goal: "End every note where it's written: mute it on time. The bar under each block shows how long you held it.",
     focusStep: null,
-    levels: steps.map(([label, rhythm, bpm, windowMs]) => {
+    levels: steps.map(([label, hint, rhythm, bpm, windowMs]) => {
       const settings: DrillSettings = {
         ...common,
         customRhythm: rhythm,
@@ -594,11 +601,12 @@ function buildNoteLengthPlan(common: DrillSettings, baseBpm: number): DrillPlan 
         pocketCenterMs: 0,
         drillMode: 'free',
         roundBars: OFF_GRID_ROUND_BARS,
-        bassGuideMode: 'off',
+        // Hear the lengths first: the reference bass plays the first bar.
+        bassGuideMode: 'demo-first',
         bpm,
         pocketWindowMs: windowMs,
       };
-      return { settings, label: `${label} · ${bpm} BPM · ±${windowMs} ms` };
+      return { settings, hint, label: `${label} · ${bpm} BPM · ±${windowMs} ms` };
     }),
   };
 }

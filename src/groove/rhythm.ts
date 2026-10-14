@@ -29,10 +29,14 @@ export interface Rhythm {
    * holds only fill the grid (plain quarters, placement drills), where any length is fine.
    */
   readonly gradeLengths?: boolean;
+  /** `true` to click softly where each note should end (a "let go here" cue for learning lengths). */
+  readonly markReleases?: boolean;
 }
 
 /** The reference bass plays this share of the written note length, so notes are separated. */
 const GATE_FACTOR = 0.85;
+/** When lengths are graded, the reference bass is the model: it holds almost the full length. */
+const GRADED_GATE_FACTOR = 0.97;
 
 const BEATS_PER_BAR = 4;
 const SIXTEENTH_STEP_LABELS = ['1', 'e', '&', 'a'] as const;
@@ -112,7 +116,8 @@ export function resolveRhythmBarSteps(
   rhythm: Rhythm,
   barNumber: number,
 ): readonly PatternStepDescriptor[] {
-  const { subdivision, swing, bars } = parseRhythm(rhythm);
+  const { subdivision, swing, bars, gradeLengths } = parseRhythm(rhythm);
+  const gateFactor = gradeLengths ? GRADED_GATE_FACTOR : GATE_FACTOR;
   const stepsPerBar = BEATS_PER_BAR * subdivision;
   const durations = stepDurations(subdivision, swing);
   const barIndex = ((barNumber % bars.length) + bars.length) % bars.length;
@@ -139,7 +144,7 @@ export function resolveRhythmBarSteps(
       subdivision,
       durationBeats: durations[step],
       lengthBeats,
-      gateBeats: lengthBeats * GATE_FACTOR,
+      gateBeats: lengthBeats * gateFactor,
       octaveShift: symbol === 'o' ? 1 : 0,
       shortStepLabel: getShortStepLabel(beatInBar, subIndex, subdivision),
       beatLabel: formatBeatLabel(beatInBar, subIndex),
@@ -153,7 +158,13 @@ export function rhythmFromStorage(value: unknown): Rhythm | null {
   if (typeof value !== 'object' || value === null) {
     return null;
   }
-  const v = value as { subdivision?: unknown; bars?: unknown; swing?: unknown; gradeLengths?: unknown };
+  const v = value as {
+    subdivision?: unknown;
+    bars?: unknown;
+    swing?: unknown;
+    gradeLengths?: unknown;
+    markReleases?: unknown;
+  };
   const sub = v.subdivision;
   if (sub !== 1 && sub !== 2 && sub !== 3 && sub !== 4) {
     return null;
@@ -170,6 +181,7 @@ export function rhythmFromStorage(value: unknown): Rhythm | null {
       bars: v.bars,
       ...(v.swing !== undefined ? { swing: v.swing } : {}),
       ...(v.gradeLengths === true ? { gradeLengths: true } : {}),
+      ...(v.markReleases === true ? { markReleases: true } : {}),
     });
   } catch {
     return null;

@@ -288,6 +288,19 @@ describe('Note Length drill', () => {
       ...Array.from({ length: short }, () => ({ stepKey: '0:0', stepName: '1', deltaMs: -60, judgment: 'short' as const })),
     ]);
 
+  it('says in words when to let go, plays the bar first, and clicks the let-go point before taking it away', () => {
+    const levels = buildDrillPlan('note-length', BASE, null).levels;
+    for (const level of levels) {
+      expect(level.hint?.length ?? 0).toBeGreaterThan(10);
+      expect(level.settings.bassGuideMode).toBe('demo-first');
+    }
+    const marked = levels.findIndex((l) => l.settings.customRhythm?.markReleases);
+    expect(marked).toBeGreaterThan(0);
+    const next = levels[marked + 1].settings.customRhythm;
+    expect(next?.bars).toEqual(levels[marked].settings.customRhythm?.bars);
+    expect(next?.markReleases).toBeFalsy();
+  });
+
   it('passes only when the notes start and end on time', () => {
     expect(judgeNoteLengthRound(roundOf(16), releases(14, 2), 16)).toBe('pass');
     expect(judgeNoteLengthRound(roundOf(16), releases(6, 10), 16)).toBe('fail');

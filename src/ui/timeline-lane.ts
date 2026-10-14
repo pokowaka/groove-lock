@@ -67,6 +67,8 @@ export class TimelineLane {
   private pocketWindowMs = 16;
   private guide: VisualGuideMode = 'glow';
   private focusStepIndex: number | null = null;
+  /** Draw a "let go here" mark at the end of each note (when note lengths are graded). */
+  private releaseMarks = false;
   private rafId: number | null = null;
 
   constructor(canvas: HTMLCanvasElement, readClock: () => number | null) {
@@ -118,6 +120,10 @@ export class TimelineLane {
 
   public setPocketWindow(pocketWindowMs: number): void {
     this.pocketWindowMs = pocketWindowMs;
+  }
+
+  public setReleaseMarks(on: boolean): void {
+    this.releaseMarks = on;
   }
 
   public setGuide(guide: VisualGuideMode): void {
@@ -272,6 +278,9 @@ export class TimelineLane {
         const end = Math.min(totalBeats, start + Math.max(step.lengthBeats, step.durationBeats));
         coveredUntil = end;
         this.drawStepBlock(ctx, pb, idx, xAtBeat(start), xAtBeat(end), blockTop, blockH, now);
+        if (this.releaseMarks) {
+          this.drawReleaseMark(ctx, xAtBeat(start + step.lengthBeats), blockTop + blockH);
+        }
         const hit = this.lastHits[pb]?.[idx];
         if (hit?.heldBeats !== undefined && hit.releaseJudgment) {
           this.drawHeldBar(
@@ -315,6 +324,17 @@ export class TimelineLane {
     ctx.textBaseline = 'middle';
     ctx.textAlign = 'left';
     ctx.fillText(step.shortStepLabel, x0 + 6, headerH / 2 + 2);
+  }
+
+  /** A short bright bracket at the written end of a note: "let go here". */
+  private drawReleaseMark(ctx: CanvasRenderingContext2D, x: number, bottom: number): void {
+    ctx.strokeStyle = withAlpha(PALETTE.textPrimary, 0.75);
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(x - 9, bottom - 26);
+    ctx.lineTo(x - 3, bottom - 26);
+    ctx.lineTo(x - 3, bottom - 4);
+    ctx.stroke();
   }
 
   private drawHeldBar(

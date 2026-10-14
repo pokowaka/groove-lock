@@ -699,6 +699,7 @@ function bootstrapGrooveLock(): void {
     lanePhrase = rhythm.bars.map((_, i) => resolveRhythmBarSteps(rhythm, i));
     laneSteps = lanePhrase[0] ?? [];
     lane.setSteps(lanePhrase, phraseNoteLabels());
+    lane.setReleaseMarks(rhythm.gradeLengths === true);
     const disabled = profile.groovePattern !== 'uniform' || profile.customRhythm !== null;
     segmented.get('subdivision')?.setDisabled(disabled);
     dom.subdivisionHelp.hidden = !disabled;
@@ -1226,10 +1227,16 @@ function bootstrapGrooveLock(): void {
     }
     const level = drill.plan.levels[drill.staircase.level];
     dom.drillTitle.textContent = drill.plan.title;
-    dom.drillGoal.textContent = drill.plan.goal;
-    dom.drillGoal.title = drill.plan.goal;
+    const levelHint = drill.plan.levels[drill.staircase.level]?.hint ?? drill.plan.goal;
+    dom.drillGoal.textContent = levelHint;
+    dom.drillGoal.title = levelHint;
     const mastered = isMastered(coachProgress, drill.plan.drillId) ? ' · 🏅 mastered' : '';
-    dom.drillLevel.textContent = `Level ${drill.staircase.level + 1}/${drill.plan.levels.length} · ${level.label}${mastered}`;
+    // With a hint, the hint says what to do; the level line only needs the numbers.
+    const levelText = level.hint
+      ? `${level.settings.bpm} BPM · ±${level.settings.pocketWindowMs} ms`
+      : level.label;
+    dom.drillLevel.textContent = `Level ${drill.staircase.level + 1}/${drill.plan.levels.length} · ${levelText}${mastered}`;
+    dom.drillLevel.title = level.label;
     renderPips(dom.drillPips, drill);
     const focusKey = drill.plan.focusStep?.key;
     const idx = focusKey

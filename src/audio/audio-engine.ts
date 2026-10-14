@@ -971,6 +971,11 @@ export class AudioEngine {
         targetEvent,
         guideBassPlayingThisBar,
       );
+      if (this.customRhythm?.markReleases && step.isTargetActive && !isSilentGapBar) {
+        let startBeat = 0;
+        for (let k = 0; k < this.currentStepInBar; k++) startBeat += barSteps[k].durationBeats;
+        this.scheduleReleaseTick(targetEvent.timeSec, startBeat, step.lengthBeats, secondsPerBeat);
+      }
 
       if (step.isTargetActive) {
         this.callbacks.onTargetScheduled(targetEvent);
@@ -1099,6 +1104,28 @@ export class AudioEngine {
       } else {
         this.playClick(timeSec, 'subdivision');
       }
+    }
+  }
+
+  /**
+   * A soft "let go here" tick where a note should end. Skipped when the end falls on a beat, which
+   * already has a click.
+   */
+  private scheduleReleaseTick(
+    noteTimeSec: number,
+    startBeat: number,
+    lengthBeats: number,
+    secondsPerBeat: number,
+  ): void {
+    const endBeat = startBeat + lengthBeats;
+    if (lengthBeats <= 0 || Math.abs(endBeat - Math.round(endBeat)) < 1e-6) {
+      return;
+    }
+    const timeSec = noteTimeSec + lengthBeats * secondsPerBeat;
+    if (this.soundMode === 'drums') {
+      this.playDrum('hihat', timeSec, 0.12);
+    } else {
+      this.playClick(timeSec, 'subdivision');
     }
   }
 
