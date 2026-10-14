@@ -221,6 +221,10 @@ class GrooveLockCaptureProcessor extends AudioWorkletProcessor {
       };
       this.port.postMessage(outMsg);
     }
+    for (const release of analysis.completedReleases) {
+      const outMsg: WorkletToMainMessage = { type: 'release', event: release };
+      this.port.postMessage(outMsg);
+    }
 
     this.meterPeak = Math.max(this.meterPeak, analysis.peakAbs);
     this.meterBlockCounter++;

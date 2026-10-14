@@ -28,6 +28,7 @@ import {
   type TargetNoteEvent,
 } from '../groove/timeline';
 import { LOOPBACK_PING_SPACING_SEC } from '../dsp/loopback';
+import type { ReleaseEvent } from '../dsp/release';
 import type { Rhythm } from '../groove/rhythm';
 import { type ClockSample, driftContributionMs, MIN_DRIFT_SAMPLES } from './clock-drift';
 import captureWorkletUrl from './capture.worklet.ts?worker&url';
@@ -107,6 +108,8 @@ export interface AudioEngineCallbacks {
   readonly onMeter: (snapshot: MeterSnapshot) => void;
   /** Called whenever a plucked note has been detected and pitch-analyzed, with its timestamp translated to `outputCtx` time. */
   readonly onPluck: (event: DetectedPluckEvent) => void;
+  /** Called when a played note ends, with its onset and release translated to `outputCtx` time. */
+  readonly onRelease?: (event: ReleaseEvent) => void;
   /** Called whenever the lookahead metronome schedules an active `TargetNoteEvent`. */
   readonly onTargetScheduled: (event: TargetNoteEvent) => void;
   /** Called on exact quarter-note boundaries to illuminate the 4-beat visual rack lamps. */
@@ -697,6 +700,16 @@ export class AudioEngine {
         rawOnsetTimeSec: msg.event.rawOnsetTimeSec + clockOffsetSec,
         inputOnsetTimeSec: msg.event.rawOnsetTimeSec,
         clockOffsetSec,
+      });
+    } else if (msg.type === 'release') {
+      if (!this.outputCtx || !this.inputCtx) {
+        return;
+      }
+      const clockOffsetSec = this.outputCtx.currentTime - this.inputCtx.currentTime;
+      this.callbacks.onRelease?.({
+        ...msg.event,
+        onsetTimeSec: msg.event.onsetTimeSec + clockOffsetSec,
+        releaseTimeSec: msg.event.releaseTimeSec + clockOffsetSec,
       });
     } else if (msg.type === 'loopback-complete') {
       this.callbacks.onLoopbackComplete(msg.summary);

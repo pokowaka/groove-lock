@@ -1,3 +1,4 @@
+import type { ReleaseEvent } from './release';
 /**
  * Twelve-tone equal-temperament chromatic pitch class names.
  */
@@ -165,6 +166,11 @@ export type WorkletToMainMessage =
   | {
       readonly type: 'pluck';
       readonly event: DetectedPluckEvent;
+    }
+  | {
+      /** A detected note ended (times on the `inputCtx` clock). */
+      readonly type: 'release';
+      readonly event: ReleaseEvent;
     }
   | {
       readonly type: 'meter';
