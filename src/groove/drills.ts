@@ -84,6 +84,8 @@ export interface DrillRecommendation {
   /** One sentence: what went wrong and what the drill will do about it. */
   readonly reason: string;
   readonly focusStep: FocusStep | null;
+  /** `true` when nothing went wrong and this is just the next challenge. */
+  readonly isChallenge?: boolean;
 }
 
 export interface DrillLevel {
@@ -249,6 +251,7 @@ export function recommendDrill(
     return {
       drillId: 'ghost-drummer',
       focusStep: null,
+      isChallenge: true,
       reason: 'Solid round! Ready for a challenge? Let\'s take the click away bit by bit and see if your groove holds.',
     };
   }
@@ -256,6 +259,7 @@ export function recommendDrill(
     return {
       drillId: 'odd-spot',
       focusStep: null,
+      isChallenge: true,
       reason: 'Solid round! Ready for something harder? Play in odd places inside the bar while the click stays on the beat.',
     };
   }

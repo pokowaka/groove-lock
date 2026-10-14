@@ -53,6 +53,11 @@ export interface GrooveLockProfile {
   instrumentRange: InstrumentRange;
   /** Graded bars per practice round (`4`, `8`, `16`), or `0` for continuous play. */
   roundBars: RoundLengthBars;
+  /**
+   * Lock-in: keep playing until this many clean bars in a row (`2`, `4`, `8`, `16`), or `0` for
+   * fixed-length rounds (`roundBars`). Drills always lock in, with a goal that ramps by level.
+   */
+  lockInGoal: LockInGoal;
   /** When `true`, the next round starts automatically after the results card countdown. */
   autoContinue: boolean;
   /** Visual timing help on the timeline lane (`'none'`, `'glow'`, or `'sweep'`). */
@@ -71,6 +76,9 @@ export type VisualGuideMode = 'none' | 'glow' | 'sweep';
 
 /** Bars per practice round; `0` means continuous (no rounds). */
 export type RoundLengthBars = 0 | 4 | 8 | 16;
+
+/** Clean bars in a row to play until (`0` = off: fixed-length rounds). */
+export type LockInGoal = 0 | 2 | 4 | 8 | 16;
 
 const STORAGE_KEY = 'groovelock.profile.v1';
 
@@ -97,6 +105,7 @@ export const DEFAULT_PROFILE: GrooveLockProfile = {
   drillMode: 'free',
   instrumentRange: 'bass',
   roundBars: 8,
+  lockInGoal: 4,
   autoContinue: true,
   visualGuide: 'glow',
   playbackAfterRound: true,
@@ -224,6 +233,14 @@ export function loadProfile(): GrooveLockProfile {
         parsed.roundBars === 16
           ? parsed.roundBars
           : DEFAULT_PROFILE.roundBars,
+      lockInGoal:
+        parsed.lockInGoal === 0 ||
+        parsed.lockInGoal === 2 ||
+        parsed.lockInGoal === 4 ||
+        parsed.lockInGoal === 8 ||
+        parsed.lockInGoal === 16
+          ? parsed.lockInGoal
+          : DEFAULT_PROFILE.lockInGoal,
       autoContinue:
         typeof parsed.autoContinue === 'boolean'
           ? parsed.autoContinue

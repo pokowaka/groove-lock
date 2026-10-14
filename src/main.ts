@@ -38,6 +38,7 @@ import {
 } from './groove/patterns';
 import { type Rhythm, resolveRhythmBarSteps } from './groove/rhythm';
 import {
+  advanceLockIn,
   advanceStaircase,
   buildDrillPlan,
   type DrillId,
@@ -70,9 +71,18 @@ import {
 } from './groove/history';
 import { nextUp, type StageState, stageState, TIME_PATH } from './groove/path';
 import {
+  type BarRange,
+  goalBarsForLevel,
+  isCleanBar,
+  type LockInEvent,
+  LockInTracker,
+  maxBarsForGoal,
+} from './groove/lock-in';
+import {
   describeReleases,
   gradeRelease,
   type ReleaseHit,
+  type ReleaseJudgment,
   releaseWindowMs,
   summarizeReleases,
 } from './groove/release-grading';
@@ -93,6 +103,7 @@ import {
 import {
   type GrooveLockProfile,
   loadProfile,
+  type LockInGoal,
   type RoundLengthBars,
   saveProfile,
   type VisualGuideMode,
@@ -206,7 +217,13 @@ function formatExerciseSummary(p: GrooveLockProfile): string {
   const drill = drills[p.drillMode];
   if (drill) parts.push(drill);
   if (p.speedTrainerStep > 0) parts.push(`Auto +${p.speedTrainerStep}`);
-  parts.push(p.roundBars === 0 ? 'Endless' : `${p.roundBars}-bar rounds`);
+  parts.push(
+    p.lockInGoal > 0
+      ? `Until ${p.lockInGoal} clean bars`
+      : p.roundBars === 0
+        ? 'Endless'
+        : `${p.roundBars}-bar rounds`,
+  );
   return parts.join(' · ');
 }
 
@@ -262,6 +279,9 @@ function bootstrapGrooveLock(): void {
     resStreak: requireEl<HTMLSpanElement>('res-streak'),
     resTip: requireEl<HTMLParagraphElement>('res-tip'),
     resLengths: requireEl<HTMLParagraphElement>('res-lengths'),
+    lockMeter: requireEl<HTMLSpanElement>('lock-meter'),
+    takeWhich: requireEl<HTMLDivElement>('take-which'),
+    takeWhichSecond: requireEl<HTMLButtonElement>('take-which-second'),
     resTempo: requireEl<HTMLParagraphElement>('res-tempo'),
     resNext: requireEl<HTMLButtonElement>('res-next'),
     resStay: requireEl<HTMLButtonElement>('res-stay'),
@@ -359,6 +379,39 @@ function bootstrapGrooveLock(): void {
   }
   let gradedNotes: GradedNote[] = [];
   let earlyReleases: ReleaseEvent[] = [];
+
+  /** Lock-in attempt in progress (play until N clean bars in a row), or `null` for fixed rounds. */
+  let lockIn: LockInTracker | null = null;
+  /** Which exercise the attempt belongs to (drill level or free-play settings), for first tries. */
+  let lockInKey = '';
+  /** Evidence per bar of the attempt, judged shortly after each bar ends. */
+  interface BarLedger {
+    readonly barNumber: number;
+    readonly startSec: number;
+    readonly endSec: number;
+    readonly graded: boolean;
+    expected: number;
+    hits: { inPocket: boolean; noteMatched: boolean }[];
+    strays: number;
+    lengths: ReleaseJudgment[];
+    /** Graded-length notes whose release has not arrived yet. */
+    openLengths: GradedNote[];
+    judged: boolean;
+  }
+  let barLedgers: BarLedger[] = [];
+  let lockInTimerId: number | null = null;
+  /** Late notes and releases still arrive this long after a bar ends; judge after that. */
+  const LOCK_IN_JUDGE_DELAY_SEC = 0.35;
+  /** The first try per exercise, kept so a nailed take can be compared with where you started. */
+  const firstTries = new Map<string, TakeView>();
+  const MAX_FIRST_TRIES = 12;
+  /** A take plus its bar lines (seconds into the take) for the results card. */
+  interface TakeView {
+    readonly take: Take;
+    readonly barsSec: number[];
+  }
+  /** Before/after takes of the last lock-in attempt. */
+  let lockInTakes: { first: TakeView | null; second: TakeView | null } | null = null;
   let lastSummary: RoundSummary | null = null;
   let countdownTimerId: number | null = null;
   let tapTimesMs: number[] = [];
@@ -571,6 +624,12 @@ function bootstrapGrooveLock(): void {
           setBarCounterIdle();
         }
         break;
+      case 'lockInGoal':
+        profile.lockInGoal = Number(raw) as LockInGoal;
+        if (!engine.isMetronomeRunning()) {
+          setBarCounterIdle();
+        }
+        break;
       case 'autoContinue':
         profile.autoContinue = raw === 'true';
         break;
@@ -607,6 +666,7 @@ function bootstrapGrooveLock(): void {
       pocketWindowMs: String(profile.pocketWindowMs),
       instrumentRange: profile.instrumentRange,
       roundBars: String(profile.roundBars),
+      lockInGoal: String(profile.lockInGoal),
       autoContinue: String(profile.autoContinue),
       visualGuide: profile.visualGuide,
       playbackAfterRound: String(profile.playbackAfterRound),
@@ -751,8 +811,13 @@ function bootstrapGrooveLock(): void {
   }
 
   function setBarCounterIdle(): void {
+    const goal = lockInGoalNow();
     dom.barCounter.textContent =
-      profile.roundBars === 0 ? 'Endless' : `${profile.roundBars}-bar rounds`;
+      goal > 0
+        ? `Until ${goal} clean bars`
+        : profile.roundBars === 0
+          ? 'Endless'
+          : `${profile.roundBars}-bar rounds`;
   }
 
   function showOverlay(title: string, sub: string): void {
@@ -929,12 +994,20 @@ function bootstrapGrooveLock(): void {
     roundHits = [];
     roundReleases = [];
     roundExpectedTargets = 0;
-    isRoundActive = effectiveRoundBars() > 0;
+    const goal = lockInGoalNow();
+    lockIn = goal > 0 ? new LockInTracker(goal, maxBarsForGoal(goal)) : null;
+    lockInKey = exerciseKey();
+    barLedgers = [];
+    gradedNotes = [];
+    earlyReleases = [];
+    isRoundActive = lockIn !== null || effectiveRoundBars() > 0;
     grader.clearTimeline();
     lane.clearBars();
     beginRoundRecording();
-    engine.setTransportConfig({ roundBars: effectiveRoundBars(), countInBars: 1 });
+    engine.setTransportConfig({ roundBars: lockIn ? 0 : effectiveRoundBars(), countInBars: 1 });
     engine.startMetronome();
+    startLockInJudging();
+    renderLockMeter(null);
     setPlayButton(true);
     hideOverlay();
     setPhaseTag('count-in');
@@ -943,6 +1016,9 @@ function bootstrapGrooveLock(): void {
 
   function stopPlaying(): void {
     engine.stopMetronome();
+    stopLockInJudging();
+    lockIn = null;
+    renderLockMeter(null);
     if (isCalibrating) {
       endCalibrationMode();
     }
@@ -980,11 +1056,15 @@ function bootstrapGrooveLock(): void {
     lastSummary = summary;
     recordRoundHistory(summary);
     const token = ++resultsToken;
-    countdownAfterPlayback = recording !== null && profile.playbackAfterRound;
-    void finishRoundRecording(token);
+    const attempt = lockIn;
+    stopLockInJudging();
+    lockIn = null;
+    const playsBack = attempt ? attempt.outcome === 'nailed' : true;
+    countdownAfterPlayback = recording !== null && profile.playbackAfterRound && playsBack;
+    void finishRoundRecording(token, attempt);
 
     if (activeDrill) {
-      completeDrillRound(activeDrill, summary);
+      completeDrillRound(activeDrill, summary, attempt);
       return;
     }
 
@@ -994,12 +1074,14 @@ function bootstrapGrooveLock(): void {
       pocketWindowMs: profile.pocketWindowMs,
       expectedTargetCount: pooled.expected,
     });
-    const rec = recommendDrill(pooledSummary, pooled.hits, {
+    const recommended = recommendDrill(pooledSummary, pooled.hits, {
       pocketWindowMs: profile.pocketWindowMs,
       expectedTargetCount: pooled.expected,
       mastered: masteredDrills(coachProgress),
       releases: roundReleases.length > 0 ? summarizeReleases(roundReleases) : undefined,
     });
+    // No "ready for a challenge?" after an attempt that did not nail it.
+    const rec = recommended?.isChallenge && attempt && attempt.outcome !== 'nailed' ? null : recommended;
     pendingRecommendation =
       rec && !latencyIssue
         ? { rec, summary: pooledSummary, hits: pooled.hits, releases: [...roundReleases] }
@@ -1020,7 +1102,7 @@ function bootstrapGrooveLock(): void {
 
     dom.resultsTitle.textContent = compare ? 'Back in the groove' : 'Round complete';
     dom.resFix.hidden = rec === null && latencyIssue === null;
-    dom.resNextLabel.textContent = 'Next round';
+    dom.resNextLabel.textContent = attempt ? 'Go again' : 'Next round';
     resultsFixAction = latencyIssue ? 'calibrate' : 'drill';
     if (latencyIssue) {
       dom.resFix.replaceChildren('Calibrate now ', kbd('C'));
@@ -1042,7 +1124,111 @@ function bootstrapGrooveLock(): void {
       dom.coachBox.hidden = true;
     }
     dom.resTip.hidden = !dom.coachBox.hidden;
+    if (attempt) {
+      dom.resultsTitle.textContent =
+        attempt.outcome === 'nailed'
+          ? `Nailed it: ${attempt.goal} clean bars in a row`
+          : `Take a breather · best run ${attempt.best} of ${attempt.goal}`;
+    }
     showResults(summary, tempoMessage);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Lock-in: play until N clean bars in a row
+  // ---------------------------------------------------------------------------
+
+  /** Clean bars in a row to play until, or `0` for a fixed-length round. */
+  function lockInGoalNow(): number {
+    if (isCalibrating) return 0;
+    if (activeDrill) {
+      return goalBarsForLevel(activeDrill.staircase.level, activeDrill.plan.levels.length);
+    }
+    return profile.lockInGoal;
+  }
+
+  /** Identifies the exercise being practiced, so first tries are compared like with like. */
+  function exerciseKey(): string {
+    if (activeDrill) return `drill:${activeDrill.plan.drillId}:${activeDrill.staircase.level}`;
+    return [
+      'free',
+      profile.groovePattern,
+      JSON.stringify(profile.customRhythm),
+      profile.subdivision,
+      profile.bpm,
+      profile.pocketCenterMs,
+      profile.pocketWindowMs,
+      profile.clickPlacement,
+      profile.gapBars,
+      profile.lockInGoal,
+    ].join('|');
+  }
+
+  function ledgerFor(barNumber: number): BarLedger | undefined {
+    return barLedgers.find((b) => b.barNumber === barNumber);
+  }
+
+  function startLockInJudging(): void {
+    stopLockInJudging();
+    if (lockIn) {
+      lockInTimerId = window.setInterval(judgeLockInBars, 50);
+    }
+  }
+
+  function stopLockInJudging(): void {
+    if (lockInTimerId !== null) {
+      window.clearInterval(lockInTimerId);
+      lockInTimerId = null;
+    }
+  }
+
+  /** Written end of a graded-length note plus its window (output clock, as heard). */
+  function lengthDeadlineSec(note: GradedNote): number {
+    return (
+      note.target.timeSec +
+      profile.pocketCenterMs / 1000 +
+      (note.lengthBeats * 60) / profile.bpm +
+      releaseWindowMs(profile.pocketWindowMs) / 1000
+    );
+  }
+
+  /** Judges every bar that ended long enough ago; ends the attempt when it is nailed or over. */
+  function judgeLockInBars(): void {
+    const tracker = lockIn;
+    const now = engine.getAudioClockSec();
+    if (!tracker || tracker.isFinished || now === null) return;
+    for (const bar of barLedgers) {
+      if (bar.judged || now < bar.endSec + LOCK_IN_JUDGE_DELAY_SEC) continue;
+      bar.judged = true;
+      if (!bar.graded || bar.expected === 0) continue;
+      // A note still sounding well past its written end was held too long.
+      for (const note of bar.openLengths) {
+        if (now > lengthDeadlineSec(note) + 0.12) bar.lengths.push('long');
+      }
+      // Note lengths always show, but only count toward a clean bar when they are the exercise.
+      const lengthsCount = activeDrill?.plan.drillId === 'note-length';
+      const clean = isCleanBar({ ...bar, lengths: lengthsCount ? bar.lengths : [] });
+      const event = tracker.record(bar.barNumber, clean);
+      renderLockMeter(event);
+      if (event === 'nailed' || event === 'gave-up') {
+        engine.finishAtNextBar();
+        break;
+      }
+    }
+  }
+
+  /** The clean-bars meter in the lane header: one dot per bar of the goal. */
+  function renderLockMeter(event: LockInEvent | null): void {
+    const tracker = lockIn;
+    dom.lockMeter.hidden = tracker === null;
+    if (!tracker) return;
+    const dots = Array.from({ length: tracker.goal }, (_, i) => (i < tracker.streak ? '●' : '○')).join(' ');
+    dom.lockMeter.textContent = `${dots}  ${tracker.streak}/${tracker.goal} clean in a row`;
+    dom.lockMeter.dataset.event = event ?? '';
+    if (event === 'miss') {
+      dom.lockMeter.classList.remove('flash');
+      void dom.lockMeter.offsetWidth;
+      dom.lockMeter.classList.add('flash');
+    }
   }
 
   function kbd(text: string): HTMLElement {
@@ -1332,15 +1518,24 @@ function bootstrapGrooveLock(): void {
     fail: 'Tough one. Try again',
   };
 
-  function completeDrillRound(drill: ActiveDrill, summary: RoundSummary): void {
-    const verdict =
-      drill.plan.drillId === 'note-length'
+  function completeDrillRound(
+    drill: ActiveDrill,
+    summary: RoundSummary,
+    attempt: LockInTracker | null,
+  ): void {
+    const verdict = attempt
+      ? attempt.outcome === 'nailed'
+        ? 'pass'
+        : 'fail'
+      : drill.plan.drillId === 'note-length'
         ? judgeNoteLengthRound(summary, summarizeReleases(roundReleases), roundExpectedTargets)
         : judgeDrillRound(summary, roundHits, {
             pocketWindowMs: profile.pocketWindowMs,
             focusStepKey: drill.plan.focusStep?.key ?? null,
           });
-    const { state, event } = advanceStaircase(drill.staircase, verdict, drill.plan.levels.length);
+    const { state, event } = attempt
+      ? advanceLockIn(drill.staircase, attempt.outcome ?? 'gave-up', drill.plan.levels.length)
+      : advanceStaircase(drill.staircase, verdict, drill.plan.levels.length);
     drill.staircase = state;
     drill.isComplete = event === 'complete';
     const wasMastered = isMastered(coachProgress, drill.plan.drillId);
@@ -1359,8 +1554,10 @@ function bootstrapGrooveLock(): void {
     updateExerciseSummary();
 
     const titles: Record<StaircaseEvent, string> = {
-      hold: VERDICT_TITLES[verdict],
-      'level-up': `Level up! → Level ${state.level + 1}`,
+      hold: attempt ? `Take a breather · best run ${attempt.best} of ${attempt.goal}` : VERDICT_TITLES[verdict],
+      'level-up': attempt
+        ? `Nailed it! ${attempt.goal} clean bars → Level ${state.level + 1}`
+        : `Level up! → Level ${state.level + 1}`,
       'level-down': "Let's step back a level",
       complete: justMastered ? 'Drill mastered! 🏅' : 'Drill complete! 🎉',
     };
@@ -1371,7 +1568,15 @@ function bootstrapGrooveLock(): void {
       ? `${now.label}: ${formatFocus(drill.baselineFocus)} → ${formatFocus(now)}`
       : `${now.label}: ${formatFocus(now)}`;
     const nextLevel = drill.plan.levels[state.level];
-    const text = drill.isComplete
+    const nextGoal = goalBarsForLevel(state.level, drill.plan.levels.length);
+    const what = nextLevel.hint ?? nextLevel.label;
+    const text = attempt && !drill.isComplete
+      ? event === 'level-up'
+        ? `Next: ${what} Play until ${nextGoal} clean bars in a row.`
+        : event === 'level-down'
+          ? `Back one level: ${what} Get ${nextGoal} clean bars here first.`
+          : `Best run: ${attempt.best} of ${attempt.goal} clean bars. Breathe, listen back, and go again: ${what}`
+      : drill.isComplete
       ? justMastered
         ? 'You beat every level on two different days. This one is yours now. Play your own groove again and hear the difference.'
         : 'You beat every level. Now play your own groove again and see the difference. Beat it again on another day to master it.'
@@ -1388,7 +1593,13 @@ function bootstrapGrooveLock(): void {
     );
     dom.resTip.hidden = true;
     dom.resFix.hidden = true;
-    dom.resNextLabel.textContent = drill.isComplete ? 'Back to your groove' : 'Next round';
+    dom.resNextLabel.textContent = drill.isComplete
+      ? 'Back to your groove'
+      : attempt
+        ? event === 'level-up'
+          ? 'Next level'
+          : 'Go again'
+        : 'Next round';
     showResults(summary, null);
   }
 
@@ -1608,6 +1819,20 @@ function bootstrapGrooveLock(): void {
 
   function handleBarScheduled(info: BarScheduleInfo): void {
     lane.pushBar(info, phaseOf(info));
+    if (lockIn && info.kind === 'play' && !ledgerFor(info.barNumber)) {
+      barLedgers.push({
+        barNumber: info.barNumber,
+        startSec: info.startTimeSec,
+        endSec: info.startTimeSec + info.durationSec,
+        graded: !isListenBar(info.barNumber),
+        expected: 0,
+        hits: [],
+        strays: 0,
+        lengths: [],
+        openLengths: [],
+        judged: false,
+      });
+    }
     if (recording && info.kind === 'play') {
       recording.barStartsSec.push(info.startTimeSec);
       recording.endSec = info.startTimeSec + info.durationSec;
@@ -1619,7 +1844,7 @@ function bootstrapGrooveLock(): void {
   // ---------------------------------------------------------------------------
 
   function beginRoundRecording(): void {
-    if (effectiveRoundBars() === 0) {
+    if (!isRoundActive) {
       recording = null;
       return;
     }
@@ -1637,8 +1862,52 @@ function bootstrapGrooveLock(): void {
     void engine.stopRecording();
   }
 
-  /** Builds the take for the round that just ended, then plays it if the results are still up. */
-  async function finishRoundRecording(token: number): Promise<void> {
+  /** Renders one window of a finished recording (instrument + re-synthesized groove) as a take. */
+  async function buildTakeView(
+    rec: RoundRecording,
+    sounds: readonly ScheduledSound[],
+    window: { startSec: number; endSec: number },
+    ctx: AudioContext,
+  ): Promise<TakeView> {
+    const drums = await renderSoundsOffline(sounds, window, ctx.sampleRate);
+    let bass: AudioBuffer | null = null;
+    if (isDemo) {
+      bass = await renderSoundsOffline(rec.demoBass, window, ctx.sampleRate);
+    } else {
+      const track = assembleTrack(rec.chunks, {
+        ...window,
+        shiftSec: -profile.latencyCompensationMs / 1000,
+      });
+      if (track) {
+        normalizePeak(track.data, 0.8, 8);
+        bass = toAudioBuffer(track.data, track.sampleRate);
+      }
+    }
+    const ticks: TakeTick[] = rec.ticks
+      .filter((t) => t.timeSec >= window.startSec && t.timeSec < window.endSec)
+      .map((t) => ({ timeSec: t.timeSec - window.startSec, judgment: t.judgment }));
+    const take: Take = { drums, bass, durationSec: window.endSec - window.startSec, ticks };
+    const barsSec = rec.barStartsSec
+      .filter((t) => t >= window.startSec && t < window.endSec)
+      .map((t) => t - window.startSec);
+    return { take, barsSec };
+  }
+
+  /** Output-clock window covering a run of bars, with a beat of pre-roll and a short tail. */
+  function barsWindow(rec: RoundRecording, range: BarRange): { startSec: number; endSec: number } | null {
+    const start = rec.barStartsSec[range.from];
+    if (start === undefined) return null;
+    const end = rec.barStartsSec[range.to + 1] ?? rec.endSec;
+    const beatSec = 60 / profile.bpm;
+    return { startSec: start - TAKE_PRE_ROLL_BEATS * beatSec, endSec: end + TAKE_TAIL_SEC };
+  }
+
+  /**
+   * Builds the take(s) for the round that just ended, then plays it if the results are still up.
+   * A lock-in attempt gets two: the first try at this exercise and the bars that nailed it (or the
+   * last bars, if it was not nailed).
+   */
+  async function finishRoundRecording(token: number, attempt: LockInTracker | null): Promise<void> {
     const rec = recording;
     if (!rec) return;
     recording = null;
@@ -1651,42 +1920,53 @@ function bootstrapGrooveLock(): void {
       onTakeUnavailable(token, 'Nothing to play back.');
       return;
     }
-    const beatSec = 60 / profile.bpm;
-    const window = {
-      startSec: firstBar - TAKE_PRE_ROLL_BEATS * beatSec,
-      endSec: rec.endSec + TAKE_TAIL_SEC,
-    };
     try {
-      const drums = await renderSoundsOffline(sounds, window, ctx.sampleRate);
-      let bass: AudioBuffer | null = null;
-      if (isDemo) {
-        bass = await renderSoundsOffline(rec.demoBass, window, ctx.sampleRate);
-      } else {
-        const track = assembleTrack(rec.chunks, {
-          ...window,
-          shiftSec: -profile.latencyCompensationMs / 1000,
-        });
-        if (track) {
-          normalizePeak(track.data, 0.8, 8);
-          bass = toAudioBuffer(track.data, track.sampleRate);
+      let view: TakeView;
+      lockInTakes = null;
+      if (attempt) {
+        const secondRange = attempt.nailedBars ?? attempt.lastBars;
+        const secondWindow = secondRange ? barsWindow(rec, secondRange) : null;
+        if (!secondWindow) {
+          onTakeUnavailable(token, 'Nothing to play back.');
+          return;
         }
+        const second = await buildTakeView(rec, sounds, secondWindow, ctx);
+        let first = firstTries.get(lockInKey) ?? null;
+        if (!first && attempt.firstBars) {
+          const firstWindow = barsWindow(rec, attempt.firstBars);
+          if (firstWindow) {
+            first = await buildTakeView(rec, sounds, firstWindow, ctx);
+            firstTries.set(lockInKey, first);
+            if (firstTries.size > MAX_FIRST_TRIES) {
+              firstTries.delete(firstTries.keys().next().value as string);
+            }
+          }
+        }
+        lockInTakes = { first, second };
+        view = second;
+      } else {
+        const beatSec = 60 / profile.bpm;
+        view = await buildTakeView(
+          rec,
+          sounds,
+          { startSec: firstBar - TAKE_PRE_ROLL_BEATS * beatSec, endSec: rec.endSec + TAKE_TAIL_SEC },
+          ctx,
+        );
       }
-      const ticks: TakeTick[] = rec.ticks.map((t) => ({
-        timeSec: t.timeSec - window.startSec,
-        judgment: t.judgment,
-      }));
-      const take: Take = { drums, bass, durationSec: window.endSec - window.startSec, ticks };
-      takes = [...takes, take].slice(-MAX_TAKES);
+      takes = [...takes, view.take].slice(-MAX_TAKES);
       if (token !== resultsToken || dom.results.hidden) return;
-      currentTake = take;
-      currentTakeBarsSec = rec.barStartsSec.map((t) => t - window.startSec);
-      renderTakeTrack();
-      dom.takeDownload.disabled = false;
-      dom.takeStatus.textContent = bass
-        ? 'Your bass and the groove, exactly as graded. L replays.'
-        : 'No instrument recorded (connect audio in Setup). Drums only.';
-      segmentedTakeMode.setDisabled(bass === null);
-      if (profile.playbackAfterRound) {
+      const nailed = attempt?.outcome === 'nailed';
+      showTakeChoice(attempt !== null && lockInTakes?.first !== null, nailed);
+      selectTake(view);
+      dom.takeStatus.textContent = !view.take.bass
+        ? 'No instrument recorded (connect audio in Setup). Drums only.'
+        : attempt
+          ? nailed
+            ? 'The bars that nailed it. Switch to "First try" to hear where you started. L replays.'
+            : 'Your last bars. Compare them with your first try. L replays.'
+          : 'Your bass and the groove, exactly as graded. L replays.';
+      segmentedTakeMode.setDisabled(view.take.bass === null);
+      if (profile.playbackAfterRound && (!attempt || nailed)) {
         playCurrentTake();
       } else {
         countdownAfterPlayback = false;
@@ -1694,6 +1974,20 @@ function bootstrapGrooveLock(): void {
     } catch {
       onTakeUnavailable(token, 'Playback unavailable for this round.');
     }
+  }
+
+  /** Shows the First try / Nailed it switch for lock-in results. */
+  function showTakeChoice(show: boolean, nailed: boolean): void {
+    dom.takeWhich.hidden = !show;
+    dom.takeWhichSecond.textContent = nailed ? 'Nailed it' : 'Last bars';
+    segmentedTakeWhich.set('second');
+  }
+
+  function selectTake(view: TakeView): void {
+    currentTake = view.take;
+    currentTakeBarsSec = view.barsSec;
+    renderTakeTrack();
+    dom.takeDownload.disabled = false;
   }
 
   function onTakeUnavailable(token: number, message: string): void {
@@ -1811,6 +2105,8 @@ function bootstrapGrooveLock(): void {
     }
     grader.pushTargetEvent(event);
     roundExpectedTargets++;
+    const ledger = ledgerFor(event.barNumber);
+    if (ledger) ledger.expected++;
     demoPlayer?.onTarget(event);
 
     if (
@@ -1830,7 +2126,7 @@ function bootstrapGrooveLock(): void {
     }
     const n = target.barNumber + 1;
     dom.barCounter.textContent =
-      effectiveRoundBars() > 0 ? `Bar ${n} / ${effectiveRoundBars()}` : `Bar ${n}`;
+      !lockIn && effectiveRoundBars() > 0 ? `Bar ${n} / ${effectiveRoundBars()}` : `Bar ${n}`;
     setPhaseTag(
       isListenBar(target.barNumber) ? 'listen' : target.isSilentGapBar ? 'silent' : 'play',
     );
@@ -1858,8 +2154,18 @@ function bootstrapGrooveLock(): void {
       pocketWindowMs: profile.pocketWindowMs,
       pocketCenterMs: profile.pocketCenterMs,
     });
+    if (!graded && lockIn) {
+      // Strict: a pluck that matches no target (wrong place, or a second hit) spoils its bar.
+      const heardSec = pluck.rawOnsetTimeSec - profile.latencyCompensationMs / 1000;
+      const bar = barLedgers.find((b) => b.graded && heardSec >= b.startSec && heardSec < b.endSec);
+      if (bar) bar.strays++;
+    }
     if (graded) {
       handleGradedHit(graded);
+      ledgerFor(graded.targetEvent.barNumber)?.hits.push({
+        inPocket: graded.inPocket,
+        noteMatched: graded.noteMatched,
+      });
       trackNoteForRelease(pluck.rawOnsetTimeSec, graded.targetEvent);
       if (isDemo && recording) {
         recording.demoBass.push({
@@ -1888,6 +2194,7 @@ function bootstrapGrooveLock(): void {
       stepKey: stepKeyOf(target.beatInBar, target.subIndex),
       stepName: formatStepName(target.beatInBar, target.subIndex, engine.getEffectiveSubdivision()),
     };
+    ledgerFor(target.barNumber)?.openLengths.push(note);
     const early = earlyReleases.find((r) => Math.abs(r.onsetTimeSec - onsetSec) < 0.003);
     if (early) {
       earlyReleases = earlyReleases.filter((r) => r !== early);
@@ -1923,6 +2230,11 @@ function bootstrapGrooveLock(): void {
     const heldBeats =
       (event.releaseTimeSec - profile.latencyCompensationMs / 1000 - note.target.timeSec) / secPerBeat;
     lane.recordRelease(note.target.barNumber, note.stepIndex, heldBeats, result.judgment);
+    const ledger = ledgerFor(note.target.barNumber);
+    if (ledger) {
+      ledger.openLengths = ledger.openLengths.filter((n) => n !== note);
+      ledger.lengths.push(result.judgment);
+    }
     if (isRoundActive) {
       roundReleases.push({
         stepKey: note.stepKey,
@@ -2301,6 +2613,14 @@ function bootstrapGrooveLock(): void {
     takePlayer.setMode(playbackMode);
   });
   segmentedTakeMode.set(playbackMode);
+  const segmentedTakeWhich = bindSegmented(dom.takeWhich, (value) => {
+    const view = value === 'first' ? lockInTakes?.first : lockInTakes?.second;
+    if (!view) return;
+    const wasPlaying = takePlayer.isPlaying();
+    stopTakePlayback();
+    selectTake(view);
+    if (wasPlaying || value === 'first') playCurrentTake();
+  });
   dom.resStay.addEventListener('click', stayAfterRound);
 
   dom.bassLineBtn.addEventListener('click', () => {

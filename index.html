@@ -63,6 +63,7 @@
       <div class="lane-header">
         <span class="phase-tag" id="phase-tag">Ready</span>
         <span class="lane-bar" id="bar-counter">8-bar rounds</span>
+        <span class="lock-meter" id="lock-meter" hidden></span>
         <span class="lane-spacer"></span>
         <span class="lane-hint">Blocks: how your last hit on each note landed (early / on time / late)</span>
         <span class="lane-target" id="lane-target">Any note</span>
@@ -161,6 +162,10 @@
         <div class="take-track" id="take-track" aria-hidden="true">
           <div class="take-marks" id="take-marks"></div>
           <div class="take-head" id="take-head"></div>
+        </div>
+        <div class="segmented take-which" id="take-which" role="radiogroup" aria-label="Which take" hidden>
+          <button type="button" data-value="first">First try</button>
+          <button type="button" data-value="second" id="take-which-second">Nailed it</button>
         </div>
         <div class="segmented take-mode" id="take-mode" role="radiogroup" aria-label="Playback mix">
           <button type="button" data-value="mix">Mix</button>
@@ -335,7 +340,18 @@
       <fieldset class="group">
         <legend>Session</legend>
         <div class="field">
-          <span class="field-label">Round length</span>
+          <span class="field-label">Play until</span>
+          <div class="segmented" data-setting="lockInGoal" role="radiogroup" aria-label="Play until clean bars in a row">
+            <button type="button" data-value="2">2 clean</button>
+            <button type="button" data-value="4">4 clean</button>
+            <button type="button" data-value="8">8 clean</button>
+            <button type="button" data-value="16">16 clean</button>
+            <button type="button" data-value="0">Off</button>
+          </div>
+          <span class="field-help">Keeps going until you play this many perfect bars in a row: every note in the pocket, nothing extra. Off uses the fixed round length below. Drills always play until you nail it.</span>
+        </div>
+        <div class="field">
+          <span class="field-label">Round length (when "Play until" is off)</span>
           <div class="segmented" data-setting="roundBars" role="radiogroup" aria-label="Round length">
             <button type="button" data-value="4">4 bars</button>
             <button type="button" data-value="8">8 bars</button>
@@ -344,12 +360,12 @@
           </div>
         </div>
         <div class="field">
-          <span class="field-label">Play back each round</span>
+          <span class="field-label">Play back when you nail it</span>
           <div class="segmented" data-setting="playbackAfterRound" role="radiogroup" aria-label="Play back each round">
             <button type="button" data-value="true">On</button>
             <button type="button" data-value="false">Off</button>
           </div>
-          <span class="field-help">Every round is recorded. Press L on the results to replay.</span>
+          <span class="field-help">Hear the bars that nailed it, then compare them with your first try. Press L on the results to replay.</span>
         </div>
         <div class="field">
           <span class="field-label">Start next round automatically</span>

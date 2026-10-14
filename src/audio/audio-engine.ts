@@ -203,6 +203,8 @@ export class AudioEngine {
   /** Graded bars per round; `0` runs continuously. */
   private roundBars = 0;
   private countInBeatsRemaining = 0;
+  /** Set by `finishAtNextBar()`: end the round at the next bar line. */
+  private finishRequested = false;
   private roundFinishTimerId: number | null = null;
 
   /** Scheduled sounds since `beginSoundLog()`, or `null` when not logging. */
@@ -766,6 +768,7 @@ export class AudioEngine {
     this.currentStepInBar = 0;
     this.currentBarNumber = 0;
     this.hasStartedFirstStep = false;
+    this.finishRequested = false;
     this.nextNoteTimeSec = this.outputCtx.currentTime + 0.06;
     this.activeBarTargetNote = computeBarTarget(this.drillMode, 0).targetNote;
     this.countInBeatsRemaining = this.countInBars * 4;
@@ -773,6 +776,16 @@ export class AudioEngine {
     this.schedulerTimerId = window.setInterval(() => {
       this.runMetronomeScheduler();
     }, 25);
+  }
+
+  /**
+   * Ends the running round at the next bar line not yet scheduled: a landing hit, a grace period,
+   * then `onRoundComplete` (used by lock-in once the goal is reached).
+   */
+  public finishAtNextBar(): void {
+    if (this.isRunning) {
+      this.finishRequested = true;
+    }
   }
 
   /**
@@ -917,7 +930,10 @@ export class AudioEngine {
       }
 
       if (this.currentStepInBar === 0 && this.hasStartedFirstStep) {
-        if (this.roundBars > 0 && this.currentBarNumber + 1 >= this.roundBars) {
+        if (
+          this.finishRequested ||
+          (this.roundBars > 0 && this.currentBarNumber + 1 >= this.roundBars)
+        ) {
           this.finishRound(this.nextNoteTimeSec);
           return;
         }

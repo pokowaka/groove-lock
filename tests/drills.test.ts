@@ -111,6 +111,7 @@ describe('recommendDrill', () => {
     const rec = recommend(spread(16, [1, -1, 2, -2]));
     expect(rec?.drillId).toBe('ghost-drummer');
     expect(rec?.reason).toMatch(/solid/i);
+    expect(rec?.isChallenge).toBe(true);
   });
 
   it('moves the challenge Off the Grid once Ghost Drummer is mastered', () => {

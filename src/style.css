@@ -1539,3 +1539,46 @@ input[type='range'] {
     transition: none !important;
   }
 }
+
+/* ---------- Lock-in meter ---------- */
+.lock-meter {
+  font-family: var(--font-mono);
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--accent-amber);
+  white-space: nowrap;
+  letter-spacing: 0.02em;
+}
+
+.lock-meter[data-event='clean'] {
+  color: var(--accent-pocket);
+}
+
+.lock-meter[data-event='nailed'] {
+  color: var(--accent-locked);
+}
+
+.lock-meter.flash {
+  animation: lock-miss 600ms ease-out;
+}
+
+@keyframes lock-miss {
+  0% {
+    color: var(--accent-miss);
+    transform: translateX(-3px);
+  }
+  20% {
+    transform: translateX(3px);
+  }
+  40% {
+    transform: translateX(-2px);
+  }
+  100% {
+    color: var(--accent-amber);
+    transform: none;
+  }
+}
+
+.take-which button {
+  white-space: nowrap;
+}
