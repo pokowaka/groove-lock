@@ -755,8 +755,7 @@ kbd {
 }
 
 /* ---------- Progress drawer ---------- */
-.progress-days,
-.progress-drills {
+.progress-days {
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -795,25 +794,163 @@ kbd {
   white-space: nowrap;
 }
 
-.progress-drill {
+/* ---------- Time Path ---------- */
+#progress-drawer {
+  width: min(540px, 100vw);
+}
+
+.path-next {
   display: grid;
-  grid-template-columns: 130px auto 1fr;
+  grid-template-columns: 1fr auto;
+  grid-template-areas:
+    'label button'
+    'title button'
+    'goal goal';
+  gap: 2px 12px;
   align-items: center;
+  margin-top: 10px;
+  padding: 14px 16px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--accent-amber);
+  background: hsla(38, 92%, 50%, 0.08);
+}
+
+.path-next-label {
+  grid-area: label;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent-amber);
+}
+
+.path-next-title {
+  grid-area: title;
+  font-family: var(--font-display);
+  font-size: 20px;
+}
+
+.path-next-goal {
+  grid-area: goal;
+  margin-top: 6px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.path-next .btn {
+  grid-area: button;
+}
+
+.path-stages {
+  display: flex;
+  flex-direction: column;
   gap: 10px;
-  padding: 8px 10px;
+  clear: both;
+}
+
+.path-stage {
+  padding: 10px 12px;
   border-radius: var(--radius-sm);
   background: var(--bg-inset);
   border: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
-.progress-drill-title {
+.path-stage[data-state='soon'],
+.path-stage[data-state='later'] {
+  opacity: 0.62;
+}
+
+.path-stage[data-state='open'],
+.path-stage[data-state='started'] {
+  border-color: hsla(38, 92%, 60%, 0.5);
+}
+
+.path-stage-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.path-stage-number {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-muted);
+  min-width: 22px;
+}
+
+.path-stage-title {
   font-weight: 700;
+  font-size: 15px;
 }
 
-.progress-drill-status {
+.path-stage-badge {
+  margin-left: auto;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.path-stage[data-state='mastered'] .path-stage-badge,
+.path-stage[data-state='completed'] .path-stage-badge {
+  color: var(--accent-pocket);
+}
+
+.path-stage[data-state='open'] .path-stage-badge,
+.path-stage[data-state='started'] .path-stage-badge {
+  color: var(--accent-amber);
+}
+
+.path-stage-skill {
   font-size: 12px;
   color: var(--text-secondary);
-  text-align: right;
+  margin-left: 30px;
+}
+
+.path-item {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 10px;
+  margin-left: 30px;
+  font-size: 13px;
+}
+
+.path-item-title {
+  font-weight: 600;
+}
+
+.path-item-title small {
+  display: block;
+  font-weight: 400;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.path-item.is-soon .path-item-title {
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
+.path-item .btn {
+  padding: 4px 12px;
+  font-size: 12px;
+}
+
+.path-item.is-next .btn {
+  border-color: var(--accent-amber);
+  color: var(--accent-amber);
+}
+
+.path-boss {
+  margin-left: 30px;
+  font-size: 11px;
+  color: var(--text-muted);
 }
 
 /* ---------- Round playback ---------- */
@@ -930,6 +1067,8 @@ kbd {
   font-family: var(--font-display);
   font-size: 18px;
   font-weight: 700;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .drill-goal {

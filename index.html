@@ -37,9 +37,9 @@
         <span class="chip-edit" aria-hidden="true">✎</span>
       </button>
 
-      <button type="button" class="status-chip" id="progress-chip" aria-keyshortcuts="P" aria-controls="progress-drawer" title="Progress (P)">
-        <span aria-hidden="true">📈</span>
-        <span>Progress</span>
+      <button type="button" class="status-chip" id="progress-chip" aria-keyshortcuts="P" aria-controls="progress-drawer" title="Time Path and progress (P)">
+        <span aria-hidden="true">🧭</span>
+        <span>Path</span>
       </button>
 
       <button type="button" class="status-chip" id="setup-chip" aria-keyshortcuts="S" aria-controls="setup-drawer">
@@ -144,7 +144,8 @@
       <span><kbd>R</kbd> reset</span>
       <span><kbd>F</kbd> fix it</span>
       <span><kbd>L</kbd> replay</span>
-      <span><kbd>P</kbd> progress</span>
+      <span><kbd>P</kbd> path</span>
+      <span><kbd>N</kbd> next up</span>
     </footer>
   </div>
 
@@ -360,21 +361,27 @@
     </div>
   </aside>
 
-  <aside class="drawer" id="progress-drawer" aria-label="Progress" aria-hidden="true">
+  <aside class="drawer" id="progress-drawer" aria-label="Time Path" aria-hidden="true">
     <div class="drawer-head">
-      <h2>Progress</h2>
+      <h2>Time Path</h2>
       <button type="button" class="icon-btn" data-close-drawer aria-label="Close">✕</button>
     </div>
     <div class="drawer-body">
+      <div class="path-next" id="path-next">
+        <span class="path-next-label">Next up</span>
+        <span class="path-next-title" id="path-next-title"></span>
+        <span class="path-next-goal" id="path-next-goal"></span>
+        <button type="button" class="btn btn-primary" id="path-next-start" aria-keyshortcuts="N">Start <kbd>N</kbd></button>
+      </div>
+      <fieldset class="group">
+        <legend>Stages</legend>
+        <div class="path-stages" id="path-stages"></div>
+        <span class="field-help">Finish a drill once to move on; beat it again on another day to master it. Everything stays playable. The path suggests, it never locks.</span>
+      </fieldset>
       <fieldset class="group">
         <legend>Your groove · last 7 days</legend>
         <div class="progress-days" id="progress-days"></div>
         <span class="field-help">Average in-pocket rate of your own rounds (drill rounds excluded).</span>
-      </fieldset>
-      <fieldset class="group">
-        <legend>Drills</legend>
-        <div class="progress-drills" id="progress-drills"></div>
-        <span class="field-help">Beat every level of a drill on two different days to master it. Drills start one level below your best.</span>
       </fieldset>
       <fieldset class="group">
         <legend>Data</legend>

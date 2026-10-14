@@ -40,7 +40,6 @@ import { type Rhythm, resolveRhythmBarSteps } from './groove/rhythm';
 import {
   advanceStaircase,
   buildDrillPlan,
-  DRILL_TITLES,
   type DrillId,
   type DrillPlan,
   type DrillRecommendation,
@@ -68,6 +67,7 @@ import {
   summarizeDays,
   updateDrillProgress,
 } from './groove/history';
+import { nextUp, type StageState, stageState, TIME_PATH } from './groove/path';
 import { type GradedPluckEntry, PocketGrader } from './groove/pocket-grader';
 import {
   computeGrooveMeter,
@@ -163,7 +163,7 @@ function formatExerciseSummary(p: GrooveLockProfile): string {
     'shuffle-swing': 'Shuffle',
     'octaves-8th': '8th octaves',
   };
-  const parts = [patterns[p.groovePattern]];
+  const parts = [p.customRhythm ? 'Custom rhythm' : patterns[p.groovePattern]];
   if (p.soundMode === 'drums') parts.push('Drums');
   const clicks: Record<ClickPlacementMode, string | null> = {
     all: null,
@@ -278,7 +278,11 @@ function bootstrapGrooveLock(): void {
     progressChip: requireEl<HTMLButtonElement>('progress-chip'),
     progressDrawer: requireEl<HTMLElement>('progress-drawer'),
     progressDays: requireEl<HTMLDivElement>('progress-days'),
-    progressDrills: requireEl<HTMLDivElement>('progress-drills'),
+    pathStages: requireEl<HTMLDivElement>('path-stages'),
+    pathNext: requireEl<HTMLDivElement>('path-next'),
+    pathNextTitle: requireEl<HTMLSpanElement>('path-next-title'),
+    pathNextGoal: requireEl<HTMLSpanElement>('path-next-goal'),
+    pathNextStart: requireEl<HTMLButtonElement>('path-next-start'),
     progressReset: requireEl<HTMLButtonElement>('progress-reset'),
     diagToggle: requireEl<HTMLButtonElement>('diag-toggle'),
     clockStatus: requireEl<HTMLParagraphElement>('clock-status'),
@@ -341,8 +345,9 @@ function bootstrapGrooveLock(): void {
     readonly plan: DrillPlan;
     staircase: StaircaseState;
     readonly savedSettings: DrillSettings;
-    readonly baselineSummary: RoundSummary;
-    readonly baselineFocus: FocusMeasurement;
+    /** The round before the drill (Fix it), or `null` when started from the Time Path. */
+    readonly baselineSummary: RoundSummary | null;
+    readonly baselineFocus: FocusMeasurement | null;
     isComplete: boolean;
   }
   let activeDrill: ActiveDrill | null = null;
@@ -1222,6 +1227,34 @@ function bootstrapGrooveLock(): void {
     void startPlaying();
   }
 
+  /** Starts a drill from the Time Path, at one level below the player's best. */
+  function startPathDrill(drillId: DrillId): void {
+    if (activeDrill) {
+      exitDrill(false);
+    } else if (engine.isMetronomeRunning()) {
+      stopPlaying();
+    }
+    cancelCountdown();
+    dom.results.hidden = true;
+    pendingRecommendation = null;
+    const saved = currentDrillSettings();
+    const plan = buildDrillPlan(drillId, saved, null);
+    const entry = entryLevelFor(coachProgress, plan.drillId, plan.levels.length);
+    activeDrill = {
+      plan,
+      staircase: startStaircase(entry),
+      savedSettings: saved,
+      baselineSummary: null,
+      baselineFocus: null,
+      isComplete: false,
+    };
+    evidence = null;
+    drawers.close();
+    applyPracticeSettings(plan.levels[entry].settings);
+    updateDrillStrip();
+    void startPlaying();
+  }
+
   /**
    * Leaves the drill and restores the player's own settings.
    *
@@ -1234,7 +1267,10 @@ function bootstrapGrooveLock(): void {
       stopPlaying();
     }
     activeDrill = null;
-    transferBaseline = transfer ? { title: drill.plan.title, summary: drill.baselineSummary } : null;
+    transferBaseline =
+      transfer && drill.baselineSummary
+        ? { title: drill.plan.title, summary: drill.baselineSummary }
+        : null;
     applyPracticeSettings(drill.savedSettings);
     updateDrillStrip();
     if (!transfer && !dom.results.hidden) {
@@ -1282,7 +1318,9 @@ function bootstrapGrooveLock(): void {
     dom.resultsTitle.textContent = titles[event];
 
     const now = measureFocus(drill.plan, roundHits);
-    const compare = `${now.label}: ${formatFocus(drill.baselineFocus)} → ${formatFocus(now)}`;
+    const compare = drill.baselineFocus
+      ? `${now.label}: ${formatFocus(drill.baselineFocus)} → ${formatFocus(now)}`
+      : `${now.label}: ${formatFocus(now)}`;
     const nextLevel = drill.plan.levels[state.level];
     const text = drill.isComplete
       ? justMastered
@@ -1363,6 +1401,112 @@ function bootstrapGrooveLock(): void {
     return new Date(y, m - 1, d).toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
   }
 
+  const STAGE_BADGES: Readonly<Record<StageState, string>> = {
+    soon: 'Coming',
+    later: 'Later',
+    open: 'Ready',
+    started: 'In progress',
+    completed: 'Completed',
+    mastered: '🏅 Mastered',
+  };
+
+  function drillStatus(id: DrillId): string {
+    const p = coachProgress[id];
+    if (!p) return 'Not tried yet';
+    if (isMastered(coachProgress, id)) return '🏅 Mastered';
+    if (p.completionDays.length > 0) return 'Done once · again another day';
+    return `Best: level ${p.bestLevel + 1}/${p.levelCount}`;
+  }
+
+  /** Renders the Time Path: the next drill to do and every stage with its drills. */
+  function renderPath(): void {
+    const next = nextUp(coachProgress);
+    dom.pathNext.hidden = next === null;
+    if (next) {
+      const plan = buildDrillPlan(next.drillId, currentDrillSettings(), null);
+      const stage = TIME_PATH.find((st) => st.id === next.stageId);
+      dom.pathNextTitle.textContent = `${stage ? `${stage.title} · ` : ''}${plan.title}`;
+      dom.pathNextGoal.textContent = plan.goal;
+    }
+
+    dom.pathStages.replaceChildren(
+      ...TIME_PATH.map((stage) => {
+        const state = stageState(stage, coachProgress);
+        const box = document.createElement('div');
+        box.className = 'path-stage';
+        box.dataset.state = state;
+
+        const head = document.createElement('div');
+        head.className = 'path-stage-head';
+        const num = document.createElement('span');
+        num.className = 'path-stage-number';
+        num.textContent = stage.number;
+        const title = document.createElement('span');
+        title.className = 'path-stage-title';
+        title.textContent = stage.title;
+        const badge = document.createElement('span');
+        badge.className = 'path-stage-badge';
+        badge.textContent = STAGE_BADGES[state];
+        head.append(num, title, badge);
+
+        const skill = document.createElement('span');
+        skill.className = 'path-stage-skill';
+        skill.textContent = stage.skill;
+        box.append(head, skill);
+
+        for (const item of stage.items) {
+          const row = document.createElement('div');
+          row.className = 'path-item';
+          const name = document.createElement('span');
+          name.className = 'path-item-title';
+          name.textContent = item.title;
+          if (!item.drillId) {
+            row.classList.add('is-soon');
+            const tag = document.createElement('small');
+            tag.textContent = 'coming';
+            name.appendChild(tag);
+            row.appendChild(name);
+            box.appendChild(row);
+            continue;
+          }
+          const id = item.drillId;
+          const status = document.createElement('small');
+          status.textContent = drillStatus(id);
+          name.appendChild(status);
+          const pips = document.createElement('span');
+          pips.className = 'level-pips';
+          const p = coachProgress[id];
+          if (p) {
+            for (let i = 0; i < p.levelCount; i++) {
+              const pip = document.createElement('span');
+              pip.className = i <= p.bestLevel ? 'pip done' : 'pip';
+              pips.appendChild(pip);
+            }
+          }
+          const play = document.createElement('button');
+          play.type = 'button';
+          play.className = 'btn';
+          play.textContent = 'Play';
+          play.addEventListener('click', () => startPathDrill(id));
+          if (next?.drillId === id) row.classList.add('is-next');
+          row.append(name, pips, play);
+          box.appendChild(row);
+        }
+
+        const boss = document.createElement('span');
+        boss.className = 'path-boss';
+        boss.textContent = `Boss groove: ${stage.boss} (coming)`;
+        box.appendChild(boss);
+        return box;
+      }),
+    );
+  }
+
+  function startNextUp(): void {
+    const next = nextUp(coachProgress);
+    if (next) startPathDrill(next.drillId);
+  }
+
   function renderProgress(): void {
     const now = new Date();
     const days = summarizeDays(roundHistory, now, 7);
@@ -1392,36 +1536,7 @@ function bootstrapGrooveLock(): void {
       }),
     );
 
-    dom.progressDrills.replaceChildren(
-      ...(Object.keys(DRILL_TITLES) as DrillId[]).map((id) => {
-        const p = coachProgress[id];
-        const row = document.createElement('div');
-        row.className = 'progress-drill';
-        const title = document.createElement('span');
-        title.className = 'progress-drill-title';
-        title.textContent = DRILL_TITLES[id];
-        const pips = document.createElement('span');
-        pips.className = 'level-pips';
-        if (p) {
-          for (let i = 0; i < p.levelCount; i++) {
-            const pip = document.createElement('span');
-            pip.className = i <= p.bestLevel ? 'pip done' : 'pip';
-            pips.appendChild(pip);
-          }
-        }
-        const status = document.createElement('span');
-        status.className = 'progress-drill-status';
-        status.textContent = !p
-          ? 'Not tried yet'
-          : isMastered(coachProgress, id)
-            ? '🏅 Mastered'
-            : p.completionDays.length > 0
-              ? 'Completed once · beat it on another day'
-              : `Best: level ${p.bestLevel + 1}/${p.levelCount}`;
-        row.append(title, pips, status);
-        return row;
-      }),
-    );
+    renderPath();
   }
 
   function resetProgress(): void {
@@ -2056,6 +2171,7 @@ function bootstrapGrooveLock(): void {
     drawers.toggle(dom.progressDrawer, dom.progressChip);
   });
   dom.progressReset.addEventListener('click', resetProgress);
+  dom.pathNextStart.addEventListener('click', startNextUp);
   dom.diagToggle.addEventListener('click', () => {
     void (diagnostics ? stopDiagnostics() : startDiagnostics());
   });
@@ -2148,6 +2264,20 @@ function bootstrapGrooveLock(): void {
         stayAfterRound();
       }
       return;
+    }
+    if (
+      e.code === 'KeyN' &&
+      !isTypingTarget(target) &&
+      !e.repeat &&
+      dom.results.hidden &&
+      !engine.isMetronomeRunning()
+    ) {
+      // Next up on the Time Path, from the Play view or from inside the Path drawer.
+      if (!drawers.isOpen() || dom.progressDrawer.classList.contains('is-open')) {
+        e.preventDefault();
+        startNextUp();
+        return;
+      }
     }
     if (isTypingTarget(target) || drawers.isOpen()) {
       return;
