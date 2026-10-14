@@ -4,6 +4,7 @@ import type {
   InstrumentRange,
   PitchEstimate,
 } from './types';
+import { type ReleaseEvent, ReleaseTracker } from './release';
 import {
   detectPitchYINFromLinear,
   unwrapRingBuffer,
@@ -56,6 +57,12 @@ const RE_PLUCK_CONFIRM_SEC = 0.045;
  */
 const RE_PLUCK_BASELINE_BLOCKS = 16;
 
+/**
+ * How far the trailing 32 ms sustain envelope lags the signal when a note is muted, measured on
+ * real Scarlett recordings (release start vs. the waveform); subtracted from release times.
+ */
+const RELEASE_ENVELOPE_LAG_SEC = 0.016;
+
 interface PendingPitchJob {
   readonly rawOnsetTimeSec: number;
   readonly executeAtTimeSec: number;
@@ -76,6 +83,8 @@ export interface AudioBlockAnalysis {
   readonly peakAbs: number;
   /** Pluck events whose post-onset YIN pitch evaluation completed during this block. */
   readonly completedPlucks: readonly DetectedPluckEvent[];
+  /** Notes whose end (mute, next note or fade-out) was confirmed during this block. */
+  readonly completedReleases: readonly ReleaseEvent[];
 }
 
 /**
@@ -121,6 +130,7 @@ export class BassOnsetAnalyzer {
   private pendingAttackEnv = 0;
 
   private readonly pendingJobs: PendingPitchJob[] = [];
+  private readonly releases = new ReleaseTracker(RELEASE_ENVELOPE_LAG_SEC);
 
   /**
    * Updates the channel routing mode, pluck sensitivity threshold, or instrument pitch filter.
@@ -286,6 +296,7 @@ export class BassOnsetAnalyzer {
       }
     }
 
+    const completedReleases: ReleaseEvent[] = [];
     const onsetTimeSec = isFreshPluckFromSilence ? exactCandidateTimeSec : rePluckTimeSec;
     if (
       !suppressOnsets &&
@@ -303,6 +314,8 @@ export class BassOnsetAnalyzer {
         executeAtTimeSec: onsetTimeSec + PITCH_SETTLE_DELAY_SEC,
         peakRms: activeRms,
       });
+      const cut = this.releases.noteOn(onsetTimeSec);
+      if (cut) completedReleases.push(cut);
     }
 
     this.recentSustainEnv[this.recentSustainIdx] = sustainEnv;
@@ -311,6 +324,8 @@ export class BassOnsetAnalyzer {
     this.smoothHfRms = 0.85 * this.smoothHfRms + 0.15 * hfRms;
 
     const blockEndTimeSec = blockStartTimeSec + len / sampleRate;
+    const released = this.releases.processEnvelope(sustainEnv, blockEndTimeSec);
+    if (released) completedReleases.push(released);
     const completedPlucks: DetectedPluckEvent[] = [];
 
     for (let j = 0; j < this.pendingJobs.length; ) {
@@ -334,6 +349,7 @@ export class BassOnsetAnalyzer {
       activeRms,
       peakAbs,
       completedPlucks,
+      completedReleases,
     };
   }
 
