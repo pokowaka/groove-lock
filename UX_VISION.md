@@ -460,6 +460,8 @@ Free practice (today's mode) stays available. The Coach is a guide, not a gate.
   - **Results only appear when you nail it** (or after a breather), with **"Nailed it" vs. "First try"** playback so you hear your own improvement. Free play has a "Play until" setting; Off brings back fixed rounds.
   - **Decision: strict, as the player asked** ("only the best"). Lengths count toward clean bars only in the Note Length drill. They're shown everywhere else, but not yet part of the bar.
 
+- **2026-10-14: Latency creeps when the page stays open for hours.** The loopback round trip grew from 16 to 62 ms over a few hours (about 4 ppm), and a page reload brought it back to 16 ms. So audio buffers up inside the long-lived audio graph. Fix: before a round, the graph is rebuilt if it is more than 10 minutes old (both contexts and the input stream). "Reconnect audio" does the same on demand. Still to confirm with a ping after a long idle period.
+
 ### Known gaps / next up
 
 - **The Time Path** ([TIME_PATH.md](./TIME_PATH.md)) is the plan for what comes next. It's a curriculum of stages from Pulse up to shifting odd meters, with an Off the Grid stage, style boss levels, and note-length (release) grading. Its build order supersedes the "next up" items below.
