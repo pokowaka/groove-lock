@@ -308,6 +308,7 @@ kbd {
   flex-direction: column;
   gap: 8px;
   min-height: 0;
+  min-width: 0;
 }
 
 .lane-header {
@@ -1072,6 +1073,7 @@ kbd {
 }
 
 .drill-goal {
+  flex: 1 1 0;
   color: var(--text-secondary);
   font-size: 14px;
   white-space: nowrap;
@@ -1085,6 +1087,10 @@ kbd {
   font-size: 13px;
   color: var(--text-primary);
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  flex-shrink: 0.2;
 }
 
 .level-pips {
