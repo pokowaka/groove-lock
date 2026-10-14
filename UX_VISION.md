@@ -454,6 +454,12 @@ Free practice (today's mode) stays available. The Coach is a guide, not a gate.
   - **Note lengths.** The release detector was validated against the waveforms of the three Scarlett fixtures (all releases within 15 ms). On a 5-minute session it found 139 mutes in 145 notes. Lengths are graded only for rhythms that write them on purpose (`gradeLengths`). The lane shows a thin held-length bar (green = on time, orange-red = cut short, blue = held too long) and the results card adds one line.
   - **Not yet tested on the real instrument:** release grading live, and how the Off the Grid ladders feel.
 
+- **2026-10-13 (playtest): Note Length was confusing; stopping every few bars broke the flow.**
+  - **Note Length now says when to let go**, in words for each level ("let go on the &"). The reference bass plays the first bar as a model, early levels click softly on the let-go point, and the lane marks each note's written end.
+  - **Lock-in replaces fixed rounds.** You keep playing until N strict clean bars in a row: every note in the pocket, on pitch, nothing extra (plus lengths in Note Length). A meter in the lane header counts the run. The goal ramps from 2 to 4 to 8 by drill level, and nailing it levels up immediately.
+  - **Results only appear when you nail it** (or after a breather), with **"Nailed it" vs. "First try"** playback so you hear your own improvement. Free play has a "Play until" setting; Off brings back fixed rounds.
+  - **Decision: strict, as the player asked** ("only the best"). Lengths count toward clean bars only in the Note Length drill. They're shown everywhere else, but not yet part of the bar.
+
 ### Known gaps / next up
 
 - **The Time Path** ([TIME_PATH.md](./TIME_PATH.md)) is the plan for what comes next. It's a curriculum of stages from Pulse up to shifting odd meters, with an Off the Grid stage, style boss levels, and note-length (release) grading. Its build order supersedes the "next up" items below.
