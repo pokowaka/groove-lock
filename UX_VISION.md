@@ -446,6 +446,14 @@ Free practice (today's mode) stays available. The Coach is a guide, not a gate.
     no gradual drift, app grading = waveform (−8 ms median), phantom notes 49 → 4. One ~32 ms output
     dropout at transport start is harmless (excluded from the Setup drift readout).
 
+- **2026-10-13: The Time Path, Off the Grid and note lengths** ([TIME_PATH.md](./TIME_PATH.md)).
+  - **Rhythms are masks.** Grooves are now mask strings (`x` note, `o` octave, `-` hold, `.` rest), one per bar, so phrases can span several bars. Each step carries its written length.
+  - **Lane.** It shows the bar that is currently sounding. Note blocks span their written length, and runs of rests are drawn as a single outline.
+  - **New drills.** Off the Grid (Odd Spot, Displacement, Groups Over 4, Strange Rhythms) and Note Length. All of them play against a new **beats-only** click.
+  - **Path drawer.** The Progress drawer is now the **Time Path** (P): "Next up" (N), then every stage with its drills and the items still to come.
+  - **Note lengths.** The release detector was validated against the waveforms of the three Scarlett fixtures (all releases within 15 ms). On a 5-minute session it found 139 mutes in 145 notes. Lengths are graded only for rhythms that write them on purpose (`gradeLengths`). The lane shows a thin held-length bar (green = on time, orange-red = cut short, blue = held too long) and the results card adds one line.
+  - **Not yet tested on the real instrument:** release grading live, and how the Off the Grid ladders feel.
+
 ### Known gaps / next up
 
 - **The Time Path** ([TIME_PATH.md](./TIME_PATH.md)) is the plan for what comes next. It's a curriculum of stages from Pulse up to shifting odd meters, with an Off the Grid stage, style boss levels, and note-length (release) grading. Its build order supersedes the "next up" items below.

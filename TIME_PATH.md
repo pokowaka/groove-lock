@@ -139,6 +139,17 @@ Every stage ends with a style groove, the **"boss level"**, where its skill turn
 
 ## 5. Suggested build order
 
+| # | Step | Status |
+|---|---|---|
+| 1 | Rhythm masks, multi-bar patterns, written note lengths | ✅ done (`src/groove/rhythm.ts`) |
+| 1b | Release detector and note-length grading, with a held-length bar in the lane and a results-card line | ✅ done (`src/dsp/release.ts`, `src/groove/release-grading.ts`); needs real-instrument playtesting |
+| 2 | Off the Grid stage (Odd Spot, Displacement, Groups Over 4, Strange Rhythms), plus Note Length | ✅ done (`src/groove/off-grid.ts`, `drills.ts`) |
+| 3 | Path UI: the Path drawer (P) with "Next up" (N) | ✅ done (`src/groove/path.ts`) |
+| 4 | Style kit and 4/4 boss styles | next |
+| 5 | Meter model, then stages 5–6 | |
+| 6 | Remaining 4/4 exercise types | |
+| 7 | Stages 7–8 | |
+
 1. **Step masks + multi-bar patterns + written note lengths** (tests first), designed so the meter model can slot in later.
 1b. **Release detector** (offline on real recordings first, then live), graded like onsets. Adds release colours to the results card and lane.
 2. **Off the Grid stage** (Odd Spot, Displacement, Strange Rhythms, Groups Over 4). New, hard, and fast to deliver.
