@@ -1,4 +1,5 @@
-import { formatBeatLabel, type Subdivision } from './timeline';
+import { resolveRhythmBarSteps, type Rhythm } from './rhythm';
+import type { Subdivision } from './timeline';
 
 /**
  * Audible reference sound engine mode:
@@ -84,6 +85,8 @@ export interface PatternStepDescriptor {
    * For `'shuffle-swing'`, downbeats are `0.62` beats and swung upbeats are `0.38` beats.
    */
   readonly durationBeats: number;
+  /** Written note length in beats (holds included); `0` for steps without a note. */
+  readonly lengthBeats: number;
   /**
    * Musical sustain gate length in quarter-note beats when synthesized by the Reference Bass.
    */
@@ -101,136 +104,43 @@ export interface PatternStepDescriptor {
   readonly isTargetActive: boolean;
 }
 
-const SIXTEENTH_STEP_LABELS = ['1', 'e', '&', 'a'] as const;
-const EIGHTH_STEP_LABELS = ['1', '&'] as const;
-const TRIPLET_STEP_LABELS = ['1', 'trip', 'let'] as const;
+/** Built-in grooves written as rhythm masks (see `Rhythm` for the notation). */
+const BUILTIN_RHYTHMS: Readonly<Record<Exclude<GroovePatternId, 'uniform'>, Rhythm>> = {
+  // Dotted quarter on 1, 8th pickup on 2-&, quarters on 3 and 4 (pickup an octave up).
+  'motown-pocket': { subdivision: 2, bars: ['x--o x-x-'] },
+  // 1, 1-a, 2-& (octave), 3, 3-e, 4-& (octave).
+  'funk-16th': { subdivision: 4, bars: ['x-.x ..o- xx-- ..o-'] },
+  // Swung 8ths: downbeats take 62% of the beat.
+  'shuffle-swing': { subdivision: 2, bars: ['xxxx xxxx'], swing: 0.62 },
+  // Root on the beat, octave on the &.
+  'octaves-8th': { subdivision: 2, bars: ['xoxo xoxo'] },
+};
 
-function getShortStepLabel(
-  beatInBar: number,
-  subIndex: number,
-  subdivision: Subdivision,
-): string {
-  if (subIndex === 0) {
-    return String(beatInBar + 1);
+/** The rhythm behind a groove pattern; `'uniform'` plays every step of `uniformSubdivision`. */
+export function rhythmForPattern(
+  patternId: GroovePatternId,
+  uniformSubdivision: Subdivision,
+): Rhythm {
+  if (patternId === 'uniform') {
+    return { subdivision: uniformSubdivision, bars: ['x'.repeat(4 * uniformSubdivision)] };
   }
-  if (subdivision === 2) {
-    return EIGHTH_STEP_LABELS[subIndex] ?? '&';
-  }
-  if (subdivision === 3) {
-    return TRIPLET_STEP_LABELS[subIndex] ?? 't';
-  }
-  return SIXTEENTH_STEP_LABELS[subIndex] ?? '+';
+  return BUILTIN_RHYTHMS[patternId];
 }
 
 /**
- * Resolves the sequence of `PatternStepDescriptor`s for a single 4/4 bar given the
- * selected `GroovePatternId` and fallback `uniformSubdivision`.
+ * Resolves the sequence of `PatternStepDescriptor`s for bar `barNumber` (default `0`) of the
+ * selected `GroovePatternId`, or of `customRhythm` when given (it overrides the pattern).
  */
 export function resolvePatternBarSteps(
   patternId: GroovePatternId,
   uniformSubdivision: Subdivision,
+  barNumber = 0,
+  customRhythm: Rhythm | null = null,
 ): readonly PatternStepDescriptor[] {
-  if (patternId === 'motown-pocket') {
-    // 8th-note grid (8 steps/bar): active on Beat 1 (0), Beat 2-& (3), Beat 3 (4), Beat 4 (6)
-    const gateByStep: Readonly<Record<number, number>> = {
-      0: 1.4, // Dotted-quarter sustain across 1, 1-&, 2
-      3: 0.45, // Eighth-note pickup on 2-&
-      4: 0.9, // Quarter-note on 3
-      6: 0.9, // Quarter-note on 4
-    };
-    return buildStraightBarSteps(
-      2,
-      (step) => step in gateByStep,
-      (step) => gateByStep[step] ?? 0.4,
-      (step) => (step === 3 ? 1 : 0),
-    );
-  }
-
-  if (patternId === 'funk-16th') {
-    // 16th-note grid (16 steps/bar): active on 1 (0), 1-a (3), 2-& (6), 3 (8), 3-e (9), 4-& (14)
-    const gateByStep: Readonly<Record<number, number>> = {
-      0: 0.55,
-      3: 0.22,
-      6: 0.38,
-      8: 0.22,
-      9: 0.65,
-      14: 0.38,
-    };
-    return buildStraightBarSteps(
-      4,
-      (step) => step in gateByStep,
-      (step) => gateByStep[step] ?? 0.2,
-      (step) => (step === 6 || step === 14 ? 1 : 0),
-    );
-  }
-
-  if (patternId === 'octaves-8th') {
-    return buildStraightBarSteps(
-      2,
-      () => true,
-      () => 0.42,
-      (step) => step % 2, // Root on downbeats, +1 octave on '&' upbeats
-    );
-  }
-
-  if (patternId === 'shuffle-swing') {
-    const steps: PatternStepDescriptor[] = [];
-    const sub: Subdivision = 2;
-    for (let step = 0; step < 8; step++) {
-      const beatInBar = Math.floor(step / 2);
-      const subIndex = step % 2;
-      const durationBeats = subIndex === 0 ? 0.62 : 0.38;
-      steps.push({
-        stepInBar: step,
-        beatInBar,
-        subIndex,
-        subdivision: sub,
-        durationBeats,
-        gateBeats: durationBeats * 0.84,
-        octaveShift: 0,
-        shortStepLabel: getShortStepLabel(beatInBar, subIndex, sub),
-        beatLabel: formatBeatLabel(beatInBar, subIndex),
-        isTargetActive: true,
-      });
-    }
-    return steps;
-  }
-
-  // Default 'uniform' mode
-  const stepDur = 1 / uniformSubdivision;
-  return buildStraightBarSteps(
-    uniformSubdivision,
-    () => true,
-    () => stepDur * 0.82,
-    () => 0,
+  return resolveRhythmBarSteps(
+    customRhythm ?? rhythmForPattern(patternId, uniformSubdivision),
+    barNumber,
   );
-}
-
-function buildStraightBarSteps(
-  subdivision: Subdivision,
-  isActiveFn: (stepInBar: number) => boolean,
-  gateBeatsFn: (stepInBar: number) => number,
-  octaveShiftFn: (stepInBar: number) => number,
-): readonly PatternStepDescriptor[] {
-  const totalSteps = 4 * subdivision;
-  const steps: PatternStepDescriptor[] = [];
-  for (let step = 0; step < totalSteps; step++) {
-    const beatInBar = Math.floor(step / subdivision);
-    const subIndex = step % subdivision;
-    steps.push({
-      stepInBar: step,
-      beatInBar,
-      subIndex,
-      subdivision,
-      durationBeats: 1 / subdivision,
-      gateBeats: gateBeatsFn(step),
-      octaveShift: octaveShiftFn(step),
-      shortStepLabel: getShortStepLabel(beatInBar, subIndex, subdivision),
-      beatLabel: formatBeatLabel(beatInBar, subIndex),
-      isTargetActive: isActiveFn(step),
-    });
-  }
-  return steps;
 }
 
 /**
