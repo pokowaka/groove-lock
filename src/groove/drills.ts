@@ -703,6 +703,23 @@ export function advanceStaircase(
   return { state: startStaircase(state.level - 1), event: 'level-down' };
 }
 
+/**
+ * Lock-in staircase: nailing the goal (clean bars in a row) moves up a level at once, or completes
+ * the drill on the top level; giving up twice in a row steps back a level.
+ */
+export function advanceLockIn(
+  state: StaircaseState,
+  outcome: 'nailed' | 'gave-up',
+  levelCount: number,
+): { state: StaircaseState; event: StaircaseEvent } {
+  if (outcome === 'nailed') {
+    return state.level >= levelCount - 1
+      ? { state: startStaircase(state.level), event: 'complete' }
+      : { state: startStaircase(state.level + 1), event: 'level-up' };
+  }
+  return advanceStaircase(state, 'fail', levelCount);
+}
+
 // ---------------------------------------------------------------------------
 // Progress metric
 // ---------------------------------------------------------------------------
