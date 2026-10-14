@@ -24,6 +24,11 @@ export interface Rhythm {
    * shuffle). Only for 8th (`2`) and 16th (`4`) grids.
    */
   readonly swing?: number;
+  /**
+   * `true` when the written note lengths matter and releases are graded. Off for rhythms whose
+   * holds only fill the grid (plain quarters, placement drills), where any length is fine.
+   */
+  readonly gradeLengths?: boolean;
 }
 
 /** The reference bass plays this share of the written note length, so notes are separated. */
@@ -148,7 +153,7 @@ export function rhythmFromStorage(value: unknown): Rhythm | null {
   if (typeof value !== 'object' || value === null) {
     return null;
   }
-  const v = value as { subdivision?: unknown; bars?: unknown; swing?: unknown };
+  const v = value as { subdivision?: unknown; bars?: unknown; swing?: unknown; gradeLengths?: unknown };
   const sub = v.subdivision;
   if (sub !== 1 && sub !== 2 && sub !== 3 && sub !== 4) {
     return null;
@@ -164,6 +169,7 @@ export function rhythmFromStorage(value: unknown): Rhythm | null {
       subdivision: sub,
       bars: v.bars,
       ...(v.swing !== undefined ? { swing: v.swing } : {}),
+      ...(v.gradeLengths === true ? { gradeLengths: true } : {}),
     });
   } catch {
     return null;

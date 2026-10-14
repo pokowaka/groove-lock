@@ -109,9 +109,9 @@ export interface PatternStepDescriptor {
 /** Built-in grooves written as rhythm masks (see `Rhythm` for the notation). */
 const BUILTIN_RHYTHMS: Readonly<Record<Exclude<GroovePatternId, 'uniform'>, Rhythm>> = {
   // Dotted quarter on 1, 8th pickup on 2-&, quarters on 3 and 4 (pickup an octave up).
-  'motown-pocket': { subdivision: 2, bars: ['x--o x-x-'] },
+  'motown-pocket': { subdivision: 2, bars: ['x--o x-x-'], gradeLengths: true },
   // 1, 1-a, 2-& (octave), 3, 3-e, 4-& (octave).
-  'funk-16th': { subdivision: 4, bars: ['x-.x ..o- xx-- ..o-'] },
+  'funk-16th': { subdivision: 4, bars: ['x-.x ..o- xx-- ..o-'], gradeLengths: true },
   // Swung 8ths: downbeats take 62% of the beat.
   'shuffle-swing': { subdivision: 2, bars: ['xxxx xxxx'], swing: 0.62 },
   // Root on the beat, octave on the &.

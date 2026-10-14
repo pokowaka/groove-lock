@@ -5,6 +5,7 @@ import {
   rhythmFromStorage,
   type Rhythm,
 } from '../src/groove/rhythm';
+import { rhythmForPattern } from '../src/groove/patterns';
 
 const active = (r: Rhythm, bar = 0): number[] =>
   resolveRhythmBarSteps(r, bar)
@@ -88,6 +89,16 @@ describe('rhythm masks', () => {
     expect(() => parseRhythm({ subdivision: 1, bars: ['....'] })).toThrow(/no notes/);
     expect(() => parseRhythm({ subdivision: 1, bars: [] })).toThrow(/no bars/);
     expect(() => parseRhythm({ subdivision: 3, bars: ['xxxxxxxxxxxx'], swing: 0.6 })).toThrow(/swing/);
+  });
+});
+
+describe('graded note lengths', () => {
+  it('grades lengths only where they are written on purpose', () => {
+    expect(rhythmForPattern('motown-pocket', 1).gradeLengths).toBe(true);
+    expect(rhythmForPattern('funk-16th', 1).gradeLengths).toBe(true);
+    expect(rhythmForPattern('uniform', 1).gradeLengths).toBeFalsy();
+    expect(rhythmForPattern('octaves-8th', 1).gradeLengths).toBeFalsy();
+    expect(rhythmFromStorage({ subdivision: 1, bars: ['x-..'], gradeLengths: true })?.gradeLengths).toBe(true);
   });
 });
 

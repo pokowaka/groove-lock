@@ -88,6 +88,7 @@ describe('Strange Rhythms', () => {
       const notes = 1 + (seed % 5);
       const r = strangeRhythm(seed, { notes });
       expect(() => parseRhythm(r)).not.toThrow();
+      expect(r.gradeLengths).toBe(true);
       const pos = notePositions(r.bars);
       expect(pos).toHaveLength(notes);
       const offBeat = pos.filter((p) => p % 4 !== 0).length;

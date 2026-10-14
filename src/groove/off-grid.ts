@@ -136,7 +136,7 @@ export function strangeRhythm(seed: number, opts: { notes: number }): Rhythm {
         mask[p + k] = '-';
       }
     });
-    return parseRhythm({ subdivision: 4, bars: [mask.join('')] });
+    return parseRhythm({ subdivision: 4, bars: [mask.join('')], gradeLengths: true });
   }
   throw new Error(`No rhythm with ${notes} notes found`);
 }
