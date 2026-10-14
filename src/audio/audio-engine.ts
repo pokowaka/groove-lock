@@ -649,6 +649,38 @@ export class AudioEngine {
     this.accumulatedDriftMs = 0;
   }
 
+  /**
+   * Tears down the whole audio graph: input stream, both contexts and the worklet. The next
+   * `connectInput()` builds everything fresh.
+   *
+   * Why: with the page open for hours, the measured round trip crept from 16 to 62 ms
+   * (≈ 4 ppm), so audio buffered up somewhere in the long-lived graph. A fresh graph starts
+   * at the calibrated latency again, like a page reload. Only call while stopped.
+   */
+  public async closeAudio(): Promise<void> {
+    if (this.isRunning) {
+      this.stopMetronome();
+    }
+    this.mediaStream?.getTracks().forEach((t) => t.stop());
+    this.mediaStream = null;
+    this.sourceNode?.disconnect();
+    this.sourceNode = null;
+    if (this.workletNode) {
+      this.workletNode.port.onmessage = null;
+      this.workletNode.disconnect();
+    }
+    this.workletNode = null;
+    this.workletModuleLoaded = false;
+    const contexts = [this.inputCtx, this.outputCtx];
+    this.inputCtx = null;
+    this.outputCtx = null;
+    this.inputClockDeviceLabel = null;
+    await Promise.all(
+      contexts.map((ctx) => (ctx && ctx.state !== 'closed' ? ctx.close().catch(() => undefined) : undefined)),
+    );
+    this.resetDriftBaseline();
+  }
+
   /** Restarts drift measurement (call after calibrating latency). */
   public resetDriftBaseline(): void {
     this.lastClockSample = null;

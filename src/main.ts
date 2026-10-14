@@ -900,10 +900,27 @@ function bootstrapGrooveLock(): void {
     dom.outputSinkStatus.textContent = labels[status];
   }
 
-  async function connectAudioInterface(requestedDeviceId: string): Promise<boolean> {
+  /** When the audio graph was last built; it is rebuilt before playing once it gets old. */
+  let audioBuiltAtMs = 0;
+  /**
+   * Rebuild the audio graph before a round once it is this old. Left open for hours, the round
+   * trip crept from 16 to 62 ms (≈ 4 ppm); rebuilding every 10 minutes keeps the creep under ~3 ms.
+   */
+  const AUDIO_REFRESH_AFTER_MS = 10 * 60 * 1000;
+
+  /**
+   * Connects (or reconnects) the audio interface.
+   *
+   * @param fresh Tear the whole audio graph down first (both contexts), resetting any latency that
+   *   crept in while the page was open.
+   */
+  async function connectAudioInterface(requestedDeviceId: string, fresh = false): Promise<boolean> {
     try {
-      dom.audioStatusText.textContent = 'Connecting…';
+      dom.audioStatusText.textContent = fresh ? 'Refreshing audio…' : 'Connecting…';
       dom.audioLed.className = 'led-dot warn';
+      if (fresh) {
+        await engine.closeAudio();
+      }
       const lists = await engine.connectInput(requestedDeviceId, profile.selectedOutputDeviceId);
       profile.selectedDeviceId = lists.resolvedInputId;
       if (!profile.selectedOutputDeviceId && lists.resolvedOutputId) {
@@ -922,7 +939,8 @@ function bootstrapGrooveLock(): void {
       const inputLabel = lists.inputs.find((d) => d.deviceId === lists.resolvedInputId)?.label ?? '';
       dom.audioLed.className = 'led-dot active';
       dom.audioStatusText.textContent = /scarlett|focusrite/i.test(inputLabel) ? 'Scarlett live' : 'Input live';
-      dom.connectAudioBtn.textContent = 'Reconnect audio input';
+      audioBuiltAtMs = performance.now();
+      dom.connectAudioBtn.textContent = 'Reconnect audio (resets latency)';
       dom.loopbackPingBtn.disabled = false;
       dom.calibrateBtn.disabled = false;
       return true;
@@ -990,6 +1008,9 @@ function bootstrapGrooveLock(): void {
     dom.results.hidden = true;
     if (!isDemo && !engine.isInputConnected()) {
       await connectAudioInterface(dom.deviceSelect.value || profile.selectedDeviceId);
+    } else if (!isDemo && performance.now() - audioBuiltAtMs > AUDIO_REFRESH_AFTER_MS) {
+      dom.barCounter.textContent = 'Refreshing audio…';
+      await connectAudioInterface(dom.deviceSelect.value || profile.selectedDeviceId, true);
     }
     roundHits = [];
     roundReleases = [];
@@ -2647,7 +2668,7 @@ function bootstrapGrooveLock(): void {
   });
 
   dom.connectAudioBtn.addEventListener('click', () => {
-    void connectAudioInterface(dom.deviceSelect.value || profile.selectedDeviceId);
+    void connectAudioInterface(dom.deviceSelect.value || profile.selectedDeviceId, engine.isInputConnected());
   });
   dom.deviceSelect.addEventListener('change', () => {
     profile.selectedDeviceId = dom.deviceSelect.value;
