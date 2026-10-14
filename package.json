@@ -5,6 +5,9 @@
   "description": "Low-latency HTML5 Web Audio rhythm and pitch trainer for bass and guitar",
   "license": "Apache-2.0",
   "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 8080",
     "build": "tsc --noEmit && vite build",
