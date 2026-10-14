@@ -1,10 +1,12 @@
-import type {
-  BassGuideMode,
-  ClickPlacementMode,
-  GroovePatternId,
-  PocketFeelOffsetMs,
-  SoundEngineMode,
-  SpeedTrainerStep,
+import { displaceRhythm, groupsRhythm, regridRhythm, spotRhythm, strangeRhythm } from './off-grid';
+import {
+  type BassGuideMode,
+  type ClickPlacementMode,
+  type GroovePatternId,
+  type PocketFeelOffsetMs,
+  rhythmForPattern,
+  type SoundEngineMode,
+  type SpeedTrainerStep,
 } from './patterns';
 import type { Rhythm } from './rhythm';
 import {
@@ -24,7 +26,16 @@ import type { DrillMode, GapClickMode, Subdivision } from './timeline';
  * A drill is just a sequence of practice settings plus a goal, so it runs on the existing engine.
  */
 
-export type DrillId = 'steady-quarters' | 'lay-it-back' | 'on-top' | 'spot-fix' | 'ghost-drummer';
+export type DrillId =
+  | 'steady-quarters'
+  | 'lay-it-back'
+  | 'on-top'
+  | 'spot-fix'
+  | 'ghost-drummer'
+  | 'odd-spot'
+  | 'displacement'
+  | 'groups-over-4'
+  | 'strange-rhythms';
 
 /** The subset of practice settings a drill controls. */
 export interface DrillSettings {
@@ -93,6 +104,10 @@ export const DRILL_TITLES: Readonly<Record<DrillId, string>> = {
   'on-top': 'On Top',
   'spot-fix': 'Spot Fix',
   'ghost-drummer': 'Ghost Drummer',
+  'odd-spot': 'Odd Spot',
+  displacement: 'Displacement',
+  'groups-over-4': 'Groups Over 4',
+  'strange-rhythms': 'Strange Rhythms',
 };
 
 const MIN_BPM = 50;
@@ -205,14 +220,21 @@ export function recommendDrill(
     };
   }
 
-  if (opts.mastered?.has('ghost-drummer')) {
-    return null;
+  if (!opts.mastered?.has('ghost-drummer')) {
+    return {
+      drillId: 'ghost-drummer',
+      focusStep: null,
+      reason: 'Solid round! Ready for a challenge? Let\'s take the click away bit by bit and see if your groove holds.',
+    };
   }
-  return {
-    drillId: 'ghost-drummer',
-    focusStep: null,
-    reason: 'Solid round! Ready for a challenge? Let\'s take the click away bit by bit and see if your groove holds.',
-  };
+  if (!opts.mastered.has('odd-spot')) {
+    return {
+      drillId: 'odd-spot',
+      focusStep: null,
+      reason: 'Solid round! Ready for something harder? Play in odd places inside the bar while the click stays on the beat.',
+    };
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -335,6 +357,11 @@ export function buildDrillPlan(
           [beyond, 16],
         ]),
       };
+    case 'odd-spot':
+    case 'displacement':
+    case 'groups-over-4':
+    case 'strange-rhythms':
+      return buildOffGridPlan(drillId, common, base.bpm);
     case 'ghost-drummer':
       return {
         drillId,
@@ -356,6 +383,147 @@ export function buildDrillPlan(
         ),
       };
   }
+}
+
+// ---------------------------------------------------------------------------
+// Off the Grid ladders
+// ---------------------------------------------------------------------------
+
+const OFF_GRID_ROUND_BARS: RoundLengthBars = 8;
+const PLAIN_PULSE: Rhythm = { subdivision: 4, bars: ['x-.. x-.. x-.. x-..'] };
+
+/** `"2a"` → `"the a of 2"`, `"3"` → `"beat 3"`, `"2let"` → `"the let of 2"`. */
+function spotName(label: string): string {
+  const beat = label[0];
+  const sub = label.slice(1);
+  return sub === '' ? `beat ${beat}` : `the ${sub} of ${beat}`;
+}
+
+interface OffGridStep {
+  readonly label: string;
+  readonly rhythm: Rhythm;
+  readonly bpm: number;
+  readonly windowMs: number;
+  readonly bassGuideMode?: BassGuideMode;
+}
+
+/**
+ * Ladders for the Off the Grid stage. Each level is a rhythm in odd places against a plain beat
+ * click; the rhythm gets harder first, then the tempo and tolerance.
+ */
+function buildOffGridPlan(
+  drillId: 'odd-spot' | 'displacement' | 'groups-over-4' | 'strange-rhythms',
+  common: DrillSettings,
+  baseBpm: number,
+): DrillPlan {
+  const start = clampBpm(Math.min(baseBpm, 100) * 0.8);
+  const up = clampBpm(start + 8);
+  const W = 25;
+  const tight = 16;
+  const spot = (spots: string[][], subdivision: 3 | 4 = 4): Rhythm => spotRhythm(spots, subdivision);
+  const movingSpot = spot([['1a'], ['3e'], ['2&'], ['4a']]);
+
+  let goal: string;
+  let steps: OffGridStep[];
+  switch (drillId) {
+    case 'odd-spot': {
+      const single = ['2&', '4&', '1a', '3a', '2e', '4e'].map((l) => ({
+        label: `Only ${spotName(l)}`,
+        rhythm: spot([[l]]),
+        bpm: start,
+        windowMs: W,
+      }));
+      goal = 'One note in an odd place. The click stays on the beat; count the 16ths in your head.';
+      steps = [
+        ...single,
+        { label: `${spotName('1e')} + ${spotName('3a')}`, rhythm: spot([['1e', '3a']]), bpm: start, windowMs: W },
+        { label: 'A moving spot (16ths)', rhythm: movingSpot, bpm: start, windowMs: W },
+        { label: `Only ${spotName('2let')} (triplets)`, rhythm: spot([['2let']], 3), bpm: start, windowMs: W },
+        {
+          label: 'A moving spot (triplets)',
+          rhythm: spot([['1trip'], ['3let'], ['2let'], ['4trip']], 3),
+          bpm: start,
+          windowMs: W,
+        },
+        { label: 'A moving spot (16ths)', rhythm: movingSpot, bpm: up, windowMs: W },
+        { label: 'A moving spot (16ths)', rhythm: movingSpot, bpm: up, windowMs: tight },
+      ];
+      break;
+    }
+    case 'displacement': {
+      const motown = regridRhythm(rhythmForPattern('motown-pocket', 1), 4);
+      const funk = rhythmForPattern('funk-16th', 1);
+      goal = "A groove you know, shifted off the beat. Keep it there; don't let it slide back.";
+      steps = [
+        { label: 'Quarters on the &', rhythm: displaceRhythm(PLAIN_PULSE, 2), bpm: start, windowMs: W },
+        { label: 'Quarters on the a', rhythm: displaceRhythm(PLAIN_PULSE, 3), bpm: start, windowMs: W },
+        { label: 'Quarters on the e', rhythm: displaceRhythm(PLAIN_PULSE, 1), bpm: start, windowMs: W },
+        { label: 'Motown, an 8th late', rhythm: displaceRhythm(motown, 2), bpm: start, windowMs: W },
+        { label: 'Motown, a 16th late', rhythm: displaceRhythm(motown, 1), bpm: start, windowMs: W },
+        { label: 'Funk, an 8th late', rhythm: displaceRhythm(funk, 2), bpm: start, windowMs: W },
+        { label: 'Funk, a 16th late', rhythm: displaceRhythm(funk, 1), bpm: start, windowMs: W },
+        { label: 'Funk, a 16th late', rhythm: displaceRhythm(funk, 1), bpm: up, windowMs: tight },
+      ];
+      break;
+    }
+    case 'groups-over-4':
+      goal = 'Groups of 3 (later 5) running across the bar line. Feel the groups and the 1 at the same time.';
+      steps = [
+        { label: '3+3+2 (8ths)', rhythm: groupsRhythm([3, 3, 2], 2), bpm: start, windowMs: W },
+        { label: '3+3+3+3+4 (16ths)', rhythm: groupsRhythm([3, 3, 3, 3, 4], 4), bpm: start, windowMs: W },
+        { label: 'Dotted 8ths across 3 bars', rhythm: groupsRhythm([3], 4), bpm: start, windowMs: W },
+        { label: 'Quarter-note triplets', rhythm: groupsRhythm([2], 3), bpm: start, windowMs: W },
+        { label: 'Dotted quarters across 3 bars', rhythm: groupsRhythm([3], 2), bpm: start, windowMs: W },
+        { label: 'Groups of 5 (16ths) across 5 bars', rhythm: groupsRhythm([5], 4), bpm: start, windowMs: W },
+        { label: 'Dotted 8ths across 3 bars', rhythm: groupsRhythm([3], 4), bpm: up, windowMs: tight },
+        { label: 'Groups of 5 (16ths) across 5 bars', rhythm: groupsRhythm([5], 4), bpm: up, windowMs: tight },
+      ];
+      break;
+    case 'strange-rhythms': {
+      goal = 'Listen to the bar, then play it back. A new strange rhythm on every level.';
+      const counts = [1, 2, 2, 3, 3, 4, 4, 5];
+      const seen = new Set<string>();
+      steps = counts.map((notes, i) => {
+        let seed = 101 + i * 37;
+        let rhythm = strangeRhythm(seed, { notes });
+        while (seen.has(rhythm.bars[0])) {
+          rhythm = strangeRhythm(++seed, { notes });
+        }
+        seen.add(rhythm.bars[0]);
+        const last = i === counts.length - 1;
+        return {
+          label: `${notes} note${notes === 1 ? '' : 's'}, heard then echoed`,
+          rhythm,
+          bpm: i >= counts.length - 2 ? up : start,
+          windowMs: last ? tight : W,
+          bassGuideMode: 'call-response-1-1' as const,
+        };
+      });
+      break;
+    }
+  }
+
+  return {
+    drillId,
+    title: DRILL_TITLES[drillId],
+    goal,
+    focusStep: null,
+    levels: steps.map((st) => {
+      const settings: DrillSettings = {
+        ...common,
+        customRhythm: st.rhythm,
+        clickPlacement: 'beats',
+        gapBars: 0,
+        pocketCenterMs: 0,
+        drillMode: 'free',
+        roundBars: OFF_GRID_ROUND_BARS,
+        bassGuideMode: st.bassGuideMode ?? 'off',
+        bpm: st.bpm,
+        pocketWindowMs: st.windowMs,
+      };
+      return { settings, label: `${st.label} · ${st.bpm} BPM · ±${st.windowMs} ms` };
+    }),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -465,6 +633,15 @@ export function measureFocus(plan: DrillPlan, hits: readonly RoundHit[]): FocusM
         unit: '%',
       };
     }
+    case 'odd-spot':
+    case 'displacement':
+    case 'groups-over-4':
+    case 'strange-rhythms':
+      return {
+        label: 'Notes in the pocket',
+        value: hits.length > 0 ? Math.round(pocketRate(hits) * 100) : null,
+        unit: '%',
+      };
     case 'lay-it-back':
     case 'on-top':
       return {

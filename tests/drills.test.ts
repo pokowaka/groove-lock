@@ -9,6 +9,7 @@ import {
   recommendDrill,
   startStaircase,
 } from '../src/groove/drills';
+import { parseRhythm, type Rhythm } from '../src/groove/rhythm';
 import { type RoundHit, summarizeRound } from '../src/groove/scoring';
 
 const W = 16;
@@ -110,13 +111,24 @@ describe('recommendDrill', () => {
     expect(rec?.reason).toMatch(/solid/i);
   });
 
-  it('does not offer a challenge drill you have already mastered', () => {
+  it('moves the challenge Off the Grid once Ghost Drummer is mastered', () => {
     const hits = spread(16, [1, -1, 2, -2]);
     const summary = summarizeRound(hits, { pocketWindowMs: W, expectedTargetCount: 16 });
     const rec = recommendDrill(summary, hits, {
       pocketWindowMs: W,
       expectedTargetCount: 16,
       mastered: new Set(['ghost-drummer']),
+    });
+    expect(rec?.drillId).toBe('odd-spot');
+  });
+
+  it('does not offer a challenge drill you have already mastered', () => {
+    const hits = spread(16, [1, -1, 2, -2]);
+    const summary = summarizeRound(hits, { pocketWindowMs: W, expectedTargetCount: 16 });
+    const rec = recommendDrill(summary, hits, {
+      pocketWindowMs: W,
+      expectedTargetCount: 16,
+      mastered: new Set(['ghost-drummer', 'odd-spot']),
     });
     expect(rec).toBeNull();
   });
@@ -188,6 +200,70 @@ describe('buildDrillPlan', () => {
       for (const level of buildDrillPlan(id, slow, null).levels) {
         expect(level.settings.bpm).toBeGreaterThanOrEqual(50);
       }
+    }
+  });
+});
+
+describe('Off the Grid drills', () => {
+  const offGrid = ['odd-spot', 'displacement', 'groups-over-4', 'strange-rhythms'] as const;
+  const notes = (r: Rhythm | null): number[] =>
+    [...(r?.bars.join('') ?? '')].flatMap((c, i) => (c === 'x' || c === 'o' ? [i] : []));
+
+  it.each(offGrid)('%s plays its own rhythms against a plain beat click', (id) => {
+    const plan = buildDrillPlan(id, BASE, null);
+    expect(plan.levels.length).toBeGreaterThanOrEqual(6);
+    for (const level of plan.levels) {
+      for (const key of DRILL_SETTING_KEYS) {
+        expect(level.settings[key]).not.toBeUndefined();
+      }
+      const rhythm = level.settings.customRhythm;
+      expect(rhythm).not.toBeNull();
+      expect(() => parseRhythm(rhythm as Rhythm)).not.toThrow();
+      expect(level.settings.clickPlacement).toBe('beats');
+      expect(level.settings.gapBars).toBe(0);
+      expect(level.settings.pocketCenterMs).toBe(0);
+      expect(level.settings.drillMode).toBe('free');
+      expect(level.settings.speedTrainerStep).toBe(0);
+      expect(level.settings.roundBars).toBe(8);
+    }
+  });
+
+  it('odd spot starts on the & and works up to the e, two spots, a moving spot and triplets', () => {
+    const levels = buildDrillPlan('odd-spot', BASE, null).levels.map((l) => l.settings.customRhythm as Rhythm);
+    expect(levels[0].bars).toEqual(['......x.........']);
+    expect(levels.some((r) => r.bars.length === 1 && notes(r).length === 1 && notes(r)[0] % 4 === 1)).toBe(true);
+    expect(levels.some((r) => notes(r).length === 2 && r.bars.length === 1)).toBe(true);
+    expect(levels.some((r) => r.bars.length >= 4)).toBe(true);
+    expect(levels.some((r) => r.subdivision === 3)).toBe(true);
+  });
+
+  it('displacement shifts a plain quarter pulse first', () => {
+    const first = buildDrillPlan('displacement', BASE, null).levels[0].settings.customRhythm as Rhythm;
+    expect(first.bars).toEqual(['..x-..x-..x-..x-']);
+  });
+
+  it('groups over 4 includes groups that cross the bar line', () => {
+    const levels = buildDrillPlan('groups-over-4', BASE, null).levels.map((l) => l.settings.customRhythm as Rhythm);
+    expect(levels.some((r) => r.bars.length === 3)).toBe(true);
+    expect(levels.some((r) => r.bars.length === 5)).toBe(true);
+  });
+
+  it('strange rhythms are heard first, then echoed, getting busier', () => {
+    const levels = buildDrillPlan('strange-rhythms', BASE, null).levels;
+    expect(levels.every((l) => l.settings.bassGuideMode === 'call-response-1-1')).toBe(true);
+    const rhythms = levels.map((l) => l.settings.customRhythm as Rhythm);
+    expect(rhythms.every((r) => r.bars.length === 1)).toBe(true);
+    const counts = rhythms.map((r) => notes(r).length);
+    expect(counts).toEqual([...counts].sort((a, b) => a - b));
+    expect(new Set(rhythms.map((r) => r.bars[0])).size).toBe(rhythms.length);
+  });
+
+  it('keeps a playable tempo and climbs past the start', () => {
+    for (const id of offGrid) {
+      const levels = buildDrillPlan(id, { ...BASE, bpm: 50 }, null).levels;
+      expect(levels.every((l) => l.settings.bpm >= 50)).toBe(true);
+      const fast = buildDrillPlan(id, BASE, null).levels;
+      expect(fast[fast.length - 1].settings.bpm).toBeGreaterThan(fast[0].settings.bpm);
     }
   });
 });
