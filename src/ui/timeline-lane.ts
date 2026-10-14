@@ -1,5 +1,6 @@
 import type { BarScheduleInfo } from '../audio/audio-engine';
 import type { PatternStepDescriptor } from '../groove/patterns';
+import type { ReleaseJudgment } from '../groove/release-grading';
 import type { HitJudgment } from '../groove/scoring';
 import type { VisualGuideMode } from '../groove/storage';
 import {
@@ -30,6 +31,9 @@ interface LastHit {
   readonly feelDeltaMs: number;
   readonly judgment: HitJudgment;
   readonly atMs: number;
+  /** How long the note was held (beats from its target onset), once its release is graded. */
+  heldBeats?: number;
+  releaseJudgment?: ReleaseJudgment;
 }
 
 const FLASH_DURATION_MS = 320;
@@ -164,6 +168,24 @@ export class TimelineLane {
     this.flashes.set(`${pb}:${stepIndex}`, { color: judgmentColor(judgment), startMs: now });
   }
 
+  /**
+   * Shows how long the last hit on a step was held: a thin bar along the bottom of the block,
+   * green when it ended on time, orange-red when cut short, blue when held too long. The block's
+   * right edge is the written end.
+   */
+  public recordRelease(
+    barNumber: number,
+    stepIndex: number,
+    heldBeats: number,
+    judgment: ReleaseJudgment,
+  ): void {
+    const hit = this.lastHits[this.phraseBarOf(barNumber)]?.[stepIndex];
+    if (hit) {
+      hit.heldBeats = heldBeats;
+      hit.releaseJudgment = judgment;
+    }
+  }
+
   public resetHits(): void {
     this.lastHits = this.phrase.map((bar) => bar.map(() => null));
     this.flashes.clear();
@@ -250,6 +272,16 @@ export class TimelineLane {
         const end = Math.min(totalBeats, start + Math.max(step.lengthBeats, step.durationBeats));
         coveredUntil = end;
         this.drawStepBlock(ctx, pb, idx, xAtBeat(start), xAtBeat(end), blockTop, blockH, now);
+        const hit = this.lastHits[pb]?.[idx];
+        if (hit?.heldBeats !== undefined && hit.releaseJudgment) {
+          this.drawHeldBar(
+            ctx,
+            xAtBeat(start),
+            xAtBeat(Math.min(totalBeats + 0.25, start + Math.max(0, hit.heldBeats))),
+            blockTop + blockH,
+            hit.releaseJudgment,
+          );
+        }
       } else if (start >= coveredUntil - 1e-9 && restStart === null) {
         restStart = start;
       }
@@ -283,6 +315,20 @@ export class TimelineLane {
     ctx.textBaseline = 'middle';
     ctx.textAlign = 'left';
     ctx.fillText(step.shortStepLabel, x0 + 6, headerH / 2 + 2);
+  }
+
+  private drawHeldBar(
+    ctx: CanvasRenderingContext2D,
+    x0: number,
+    x1: number,
+    bottom: number,
+    judgment: ReleaseJudgment,
+  ): void {
+    const color =
+      judgment === 'on-time' ? PALETTE.pocket : judgment === 'short' ? PALETTE.rush : PALETTE.drag;
+    ctx.fillStyle = color;
+    roundRectPath(ctx, x0 + 3, bottom - 9, Math.max(3, x1 - x0 - 3), 5, 2.5);
+    ctx.fill();
   }
 
   /** Beats of the previous phrase bar's last note that ring on into bar `pb`. */

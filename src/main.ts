@@ -68,6 +68,14 @@ import {
   updateDrillProgress,
 } from './groove/history';
 import { nextUp, type StageState, stageState, TIME_PATH } from './groove/path';
+import {
+  describeReleases,
+  gradeRelease,
+  type ReleaseHit,
+  releaseWindowMs,
+  summarizeReleases,
+} from './groove/release-grading';
+import type { ReleaseEvent } from './dsp/release';
 import { type GradedPluckEntry, PocketGrader } from './groove/pocket-grader';
 import {
   computeGrooveMeter,
@@ -252,6 +260,7 @@ function bootstrapGrooveLock(): void {
     resMean: requireEl<HTMLSpanElement>('res-mean'),
     resStreak: requireEl<HTMLSpanElement>('res-streak'),
     resTip: requireEl<HTMLParagraphElement>('res-tip'),
+    resLengths: requireEl<HTMLParagraphElement>('res-lengths'),
     resTempo: requireEl<HTMLParagraphElement>('res-tempo'),
     resNext: requireEl<HTMLButtonElement>('res-next'),
     resStay: requireEl<HTMLButtonElement>('res-stay'),
@@ -336,6 +345,19 @@ function bootstrapGrooveLock(): void {
   let isRoundActive = false;
   let roundHits: RoundHit[] = [];
   let roundExpectedTargets = 0;
+  /** Graded note lengths of the current round. */
+  let roundReleases: ReleaseHit[] = [];
+  /** Recently graded notes awaiting their release, and releases that arrived before their note. */
+  interface GradedNote {
+    readonly onsetSec: number;
+    readonly target: TargetNoteEvent;
+    readonly stepIndex: number;
+    readonly lengthBeats: number;
+    readonly stepKey: string;
+    readonly stepName: string;
+  }
+  let gradedNotes: GradedNote[] = [];
+  let earlyReleases: ReleaseEvent[] = [];
   let lastSummary: RoundSummary | null = null;
   let countdownTimerId: number | null = null;
   let tapTimesMs: number[] = [];
@@ -407,6 +429,7 @@ function bootstrapGrooveLock(): void {
   const engine = new AudioEngine({
     onMeter: handleMeterSnapshot,
     onPluck: handlePluckEvent,
+    onRelease: handleReleaseEvent,
     onTargetScheduled: handleTargetScheduled,
     onBeatLamp: () => {},
     onStepLamp: handleStepLamp,
@@ -431,6 +454,13 @@ function bootstrapGrooveLock(): void {
         readClock: () => engine.getAudioClockSec(),
         hardwareLatencyMs: Number(new URLSearchParams(window.location.search).get('demoLatency') ?? 18),
         readRange: () => profile.instrumentRange,
+        deliverRelease: (release) => handleReleaseEvent(release),
+        readLengthSec: (target) => {
+          if (!activeRhythm().gradeLengths) return null;
+          const bar = lanePhrase[((target.barNumber % lanePhrase.length) + lanePhrase.length) % lanePhrase.length];
+          const step = bar?.find((st) => st.beatInBar === target.beatInBar && st.subIndex === target.subIndex);
+          return step && step.lengthBeats > 0 ? (step.lengthBeats * 60) / profile.bpm : null;
+        },
       })
     : null;
 
@@ -894,6 +924,7 @@ function bootstrapGrooveLock(): void {
       await connectAudioInterface(dom.deviceSelect.value || profile.selectedDeviceId);
     }
     roundHits = [];
+    roundReleases = [];
     roundExpectedTargets = 0;
     isRoundActive = effectiveRoundBars() > 0;
     grader.clearTimeline();
@@ -1052,6 +1083,9 @@ function bootstrapGrooveLock(): void {
       summary.meanFeelDeltaMs === null ? '—' : formatSignedMs(summary.meanFeelDeltaMs);
     dom.resStreak.textContent = String(summary.bestStreak);
     dom.resTip.textContent = summary.tip;
+    const lengths = describeReleases(summarizeReleases(roundReleases));
+    dom.resLengths.hidden = lengths === null;
+    dom.resLengths.textContent = lengths ?? '';
     dom.resTempo.hidden = tempoMessage === null;
     dom.resTempo.textContent = tempoMessage ?? '';
     dom.results.hidden = false;
@@ -1811,6 +1845,7 @@ function bootstrapGrooveLock(): void {
     });
     if (graded) {
       handleGradedHit(graded);
+      trackNoteForRelease(pluck.rawOnsetTimeSec, graded.targetEvent);
       if (isDemo && recording) {
         recording.demoBass.push({
           kind: 'bass',
@@ -1820,6 +1855,66 @@ function bootstrapGrooveLock(): void {
           level: 0.5,
         });
       }
+    }
+  }
+
+  /** Remembers a graded note so its release can be graded against its written length. */
+  function trackNoteForRelease(onsetSec: number, target: TargetNoteEvent): void {
+    if (!activeRhythm().gradeLengths) return;
+    const bar = lanePhrase[((target.barNumber % lanePhrase.length) + lanePhrase.length) % lanePhrase.length];
+    const stepIndex = bar?.findIndex((s) => s.beatInBar === target.beatInBar && s.subIndex === target.subIndex) ?? -1;
+    const step = bar?.[stepIndex];
+    if (!step || step.lengthBeats <= 0) return;
+    const note: GradedNote = {
+      onsetSec,
+      target,
+      stepIndex,
+      lengthBeats: step.lengthBeats,
+      stepKey: stepKeyOf(target.beatInBar, target.subIndex),
+      stepName: formatStepName(target.beatInBar, target.subIndex, engine.getEffectiveSubdivision()),
+    };
+    const early = earlyReleases.find((r) => Math.abs(r.onsetTimeSec - onsetSec) < 0.003);
+    if (early) {
+      earlyReleases = earlyReleases.filter((r) => r !== early);
+      gradeNoteRelease(note, early);
+      return;
+    }
+    gradedNotes = [...gradedNotes, note].slice(-16);
+  }
+
+  function handleReleaseEvent(event: ReleaseEvent): void {
+    if (!engine.isMetronomeRunning() || isCalibrating) return;
+    const note = gradedNotes.find((n) => Math.abs(n.onsetSec - event.onsetTimeSec) < 0.003);
+    if (!note) {
+      // The pluck (reported after its pitch settles) may not have arrived yet.
+      earlyReleases = [...earlyReleases, event].slice(-8);
+      return;
+    }
+    gradedNotes = gradedNotes.filter((n) => n !== note);
+    gradeNoteRelease(note, event);
+  }
+
+  function gradeNoteRelease(note: GradedNote, event: ReleaseEvent): void {
+    const result = gradeRelease({
+      releaseTimeSec: event.releaseTimeSec,
+      latencyCompensationMs: profile.latencyCompensationMs,
+      targetTimeSec: note.target.timeSec,
+      pocketCenterMs: profile.pocketCenterMs,
+      lengthBeats: note.lengthBeats,
+      bpm: profile.bpm,
+      windowMs: releaseWindowMs(profile.pocketWindowMs),
+    });
+    const secPerBeat = 60 / profile.bpm;
+    const heldBeats =
+      (event.releaseTimeSec - profile.latencyCompensationMs / 1000 - note.target.timeSec) / secPerBeat;
+    lane.recordRelease(note.target.barNumber, note.stepIndex, heldBeats, result.judgment);
+    if (isRoundActive) {
+      roundReleases.push({
+        stepKey: note.stepKey,
+        stepName: note.stepName,
+        deltaMs: result.deltaMs,
+        judgment: result.judgment,
+      });
     }
   }
 
