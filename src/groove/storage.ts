@@ -8,6 +8,7 @@ import type {
   SoundEngineMode,
   SpeedTrainerStep,
 } from './patterns';
+import { type Rhythm, rhythmFromStorage } from './rhythm';
 import type { DrillMode, GapClickMode, Subdivision } from './timeline';
 
 /**
@@ -30,6 +31,8 @@ export interface GrooveLockProfile {
   subdivision: Subdivision;
   /** Active rhythmic groove pattern template (`'uniform'`, `'motown-pocket'`, `'funk-16th'`, etc.). */
   groovePattern: GroovePatternId;
+  /** A rhythm that overrides `groovePattern` (set by drills), or `null`. */
+  customRhythm: Rhythm | null;
   /** Audible reference sound engine (`'click'` or `'drums'`). */
   soundMode: SoundEngineMode;
   /** Reference bass playback mode (`'off'`, `'call-response-1-1'`, `'call-response-1-3'`, `'demo-first'`, `'always'`). */
@@ -83,6 +86,7 @@ export const DEFAULT_PROFILE: GrooveLockProfile = {
   bpm: 90,
   subdivision: 1,
   groovePattern: 'uniform',
+  customRhythm: null,
   soundMode: 'click',
   bassGuideMode: 'off',
   clickPlacement: 'all',
@@ -156,6 +160,7 @@ export function loadProfile(): GrooveLockProfile {
         parsed.groovePattern === 'octaves-8th'
           ? parsed.groovePattern
           : DEFAULT_PROFILE.groovePattern,
+      customRhythm: rhythmFromStorage(parsed.customRhythm),
       soundMode:
         parsed.soundMode === 'click' || parsed.soundMode === 'drums'
           ? parsed.soundMode

@@ -142,3 +142,30 @@ export function resolveRhythmBarSteps(
     };
   });
 }
+
+/** Restores a rhythm saved as JSON, or `null` if it is missing or malformed. */
+export function rhythmFromStorage(value: unknown): Rhythm | null {
+  if (typeof value !== 'object' || value === null) {
+    return null;
+  }
+  const v = value as { subdivision?: unknown; bars?: unknown; swing?: unknown };
+  const sub = v.subdivision;
+  if (sub !== 1 && sub !== 2 && sub !== 3 && sub !== 4) {
+    return null;
+  }
+  if (!Array.isArray(v.bars) || !v.bars.every((b): b is string => typeof b === 'string')) {
+    return null;
+  }
+  if (v.swing !== undefined && typeof v.swing !== 'number') {
+    return null;
+  }
+  try {
+    return parseRhythm({
+      subdivision: sub,
+      bars: v.bars,
+      ...(v.swing !== undefined ? { swing: v.swing } : {}),
+    });
+  } catch {
+    return null;
+  }
+}

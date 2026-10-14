@@ -16,6 +16,7 @@ const W = 16;
 const BASE: DrillSettings = {
   bpm: 100,
   groovePattern: 'motown-pocket',
+  customRhythm: null,
   subdivision: 1,
   clickPlacement: 'all',
   gapBars: 0,

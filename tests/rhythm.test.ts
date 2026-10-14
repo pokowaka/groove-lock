@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { parseRhythm, resolveRhythmBarSteps, type Rhythm } from '../src/groove/rhythm';
+import {
+  parseRhythm,
+  resolveRhythmBarSteps,
+  rhythmFromStorage,
+  type Rhythm,
+} from '../src/groove/rhythm';
 
 const active = (r: Rhythm, bar = 0): number[] =>
   resolveRhythmBarSteps(r, bar)
@@ -83,5 +88,20 @@ describe('rhythm masks', () => {
     expect(() => parseRhythm({ subdivision: 1, bars: ['....'] })).toThrow(/no notes/);
     expect(() => parseRhythm({ subdivision: 1, bars: [] })).toThrow(/no bars/);
     expect(() => parseRhythm({ subdivision: 3, bars: ['xxxxxxxxxxxx'], swing: 0.6 })).toThrow(/swing/);
+  });
+});
+
+describe('stored rhythms', () => {
+  it('accepts a valid stored rhythm and rejects anything else', () => {
+    expect(rhythmFromStorage({ subdivision: 4, bars: ['x... .... .... ...x'] })).toEqual({
+      subdivision: 4,
+      bars: ['x..............x'],
+    });
+    expect(rhythmFromStorage({ subdivision: 2, bars: ['xxxxxxxx'], swing: 0.6 })?.swing).toBe(0.6);
+    expect(rhythmFromStorage(null)).toBeNull();
+    expect(rhythmFromStorage('x...')).toBeNull();
+    expect(rhythmFromStorage({ subdivision: 5, bars: ['x....'] })).toBeNull();
+    expect(rhythmFromStorage({ subdivision: 1, bars: ['x..'] })).toBeNull();
+    expect(rhythmFromStorage({ subdivision: 1, bars: [7] })).toBeNull();
   });
 });

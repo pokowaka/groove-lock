@@ -6,6 +6,7 @@ import type {
   SoundEngineMode,
   SpeedTrainerStep,
 } from './patterns';
+import type { Rhythm } from './rhythm';
 import {
   aggregateByStep,
   type RoundHit,
@@ -29,6 +30,8 @@ export type DrillId = 'steady-quarters' | 'lay-it-back' | 'on-top' | 'spot-fix' 
 export interface DrillSettings {
   bpm: number;
   groovePattern: GroovePatternId;
+  /** Overrides `groovePattern` when set. */
+  customRhythm: Rhythm | null;
   subdivision: Subdivision;
   clickPlacement: ClickPlacementMode;
   gapBars: GapClickMode;
@@ -44,6 +47,7 @@ export interface DrillSettings {
 export const DRILL_SETTING_KEYS: readonly (keyof DrillSettings)[] = [
   'bpm',
   'groovePattern',
+  'customRhythm',
   'subdivision',
   'clickPlacement',
   'gapBars',
@@ -294,7 +298,7 @@ export function buildDrillPlan(
         goal: 'Plain quarter notes. Make every note land the same.',
         focusStep: null,
         levels: make(
-          { groovePattern: 'uniform', subdivision: 1, clickPlacement: 'all', gapBars: 0, pocketCenterMs: 0, drillMode: 'free' },
+          { groovePattern: 'uniform', customRhythm: null, subdivision: 1, clickPlacement: 'all', gapBars: 0, pocketCenterMs: 0, drillMode: 'free' },
           tempoLadder,
         ),
       };

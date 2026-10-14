@@ -50,10 +50,15 @@ export class TimelineLane {
   private readonly canvas: HTMLCanvasElement;
   private readonly readClock: () => number | null;
 
-  private steps: readonly PatternStepDescriptor[] = [];
-  private noteLabels: readonly string[] = [];
-  private lastHits: (LastHit | null)[] = [];
-  private flashes = new Map<number, Flash>();
+  /** Steps of each bar of the phrase (one entry for a one-bar groove). */
+  private phrase: readonly (readonly PatternStepDescriptor[])[] = [[]];
+  private phraseLabels: readonly (readonly string[])[] = [[]];
+  /** Last hit per phrase bar and step. */
+  private lastHits: (LastHit | null)[][] = [[]];
+  /** Flashes keyed by `"<phrase bar>:<step>"`. */
+  private flashes = new Map<string, Flash>();
+  /** Phrase bar on screen; kept while idle so the last bar stays visible. */
+  private shownBar = 0;
   private bars: LaneBar[] = [];
   private pocketWindowMs = 16;
   private guide: VisualGuideMode = 'glow';
@@ -78,27 +83,33 @@ export class TimelineLane {
   }
 
   /**
-   * Replaces the bar layout. Last hits are cleared when the step grid changes.
+   * Replaces the layout. Last hits are cleared when the rhythm changes.
    *
-   * @param steps Steps of one bar.
-   * @param noteLabels Note name per step (empty string for none).
+   * @param phrase Steps of each bar of the phrase (one entry for a one-bar groove).
+   * @param noteLabels Note name per bar and step (empty string for none).
    */
   public setSteps(
-    steps: readonly PatternStepDescriptor[],
-    noteLabels: readonly string[],
+    phrase: readonly (readonly PatternStepDescriptor[])[],
+    noteLabels: readonly (readonly string[])[],
   ): void {
-    const signature = (s: readonly PatternStepDescriptor[]): string =>
-      s.map((x) => `${x.durationBeats}:${x.isTargetActive ? 1 : 0}`).join('|');
-    if (signature(steps) !== signature(this.steps)) {
-      this.lastHits = steps.map(() => null);
+    const bars = phrase.length > 0 ? phrase : [[]];
+    const signature = (p: readonly (readonly PatternStepDescriptor[])[]): string =>
+      p
+        .map((bar) =>
+          bar.map((x) => `${x.durationBeats}:${x.isTargetActive ? x.lengthBeats : '-'}`).join('|'),
+        )
+        .join('/');
+    if (signature(bars) !== signature(this.phrase)) {
+      this.lastHits = bars.map((bar) => bar.map(() => null));
       this.flashes.clear();
+      this.shownBar = 0;
     }
-    this.steps = steps;
-    this.noteLabels = noteLabels;
+    this.phrase = bars;
+    this.phraseLabels = noteLabels;
   }
 
-  public setNoteLabels(noteLabels: readonly string[]): void {
-    this.noteLabels = noteLabels;
+  public setNoteLabels(noteLabels: readonly (readonly string[])[]): void {
+    this.phraseLabels = noteLabels;
   }
 
   public setPocketWindow(pocketWindowMs: number): void {
@@ -126,22 +137,35 @@ export class TimelineLane {
     this.bars = [];
   }
 
+  private phraseBarOf(barNumber: number): number {
+    const n = this.phrase.length;
+    return ((barNumber % n) + n) % n;
+  }
+
   /**
    * Shows a graded hit on its step (replacing the previous one) and flashes the block.
    *
+   * @param barNumber Bar the hit was played in (multi-bar phrases keep hits per phrase bar).
    * @param feelDeltaMs Signed offset from the feel target (negative = early).
    */
-  public recordHit(stepIndex: number, feelDeltaMs: number, judgment: HitJudgment): void {
-    if (stepIndex < 0 || stepIndex >= this.steps.length) {
+  public recordHit(
+    barNumber: number,
+    stepIndex: number,
+    feelDeltaMs: number,
+    judgment: HitJudgment,
+  ): void {
+    const pb = this.phraseBarOf(barNumber);
+    const hits = this.lastHits[pb];
+    if (!hits || stepIndex < 0 || stepIndex >= hits.length) {
       return;
     }
     const now = performance.now();
-    this.lastHits[stepIndex] = { feelDeltaMs, judgment, atMs: now };
-    this.flashes.set(stepIndex, { color: judgmentColor(judgment), startMs: now });
+    hits[stepIndex] = { feelDeltaMs, judgment, atMs: now };
+    this.flashes.set(`${pb}:${stepIndex}`, { color: judgmentColor(judgment), startMs: now });
   }
 
   public resetHits(): void {
-    this.lastHits = this.steps.map(() => null);
+    this.lastHits = this.phrase.map((bar) => bar.map(() => null));
     this.flashes.clear();
   }
 
@@ -170,10 +194,15 @@ export class TimelineLane {
     const innerW = width - padX * 2;
     const blockTop = headerH + 4;
     const blockH = Math.max(40, height - 12 - blockTop);
-    const totalBeats = this.steps.reduce((acc, s) => acc + s.durationBeats, 0) || 4;
+    const current = this.currentBar(this.readClock());
+    if (current && current.bar.info.kind === 'play') {
+      this.shownBar = this.phraseBarOf(current.bar.info.barNumber);
+    }
+    const pb = this.shownBar;
+    const steps = this.phrase[pb] ?? [];
+    const totalBeats = steps.reduce((acc, s) => acc + s.durationBeats, 0) || 4;
     const xAtBeat = (beat: number): number => padX + (beat / totalBeats) * innerW;
 
-    const current = this.currentBar(this.readClock());
     const glowBeat =
       current && current.bar.phase !== 'count-in' && this.guide === 'glow'
         ? Math.min(Math.floor(totalBeats) - 1, Math.floor(current.progress * totalBeats))
@@ -198,14 +227,34 @@ export class TimelineLane {
     }
 
     const now = performance.now();
+    // Note blocks span their written length; runs of rests share one dashed outline; a note held
+    // over the bar line from the previous bar continues as a plain block.
+    let coveredUntil = this.carriedHoldBeats(pb);
+    if (coveredUntil > 0) {
+      this.drawHoldContinuation(ctx, xAtBeat(0), xAtBeat(Math.min(totalBeats, coveredUntil)), blockTop, blockH);
+    }
+    let restStart: number | null = null;
+    const flushRest = (endBeat: number): void => {
+      if (restStart !== null && endBeat > restStart) {
+        this.drawRest(ctx, xAtBeat(restStart), xAtBeat(endBeat), blockTop, blockH);
+      }
+      restStart = null;
+    };
     let cumBeats = 0;
-    this.steps.forEach((step, idx) => {
-      const x0 = xAtBeat(cumBeats);
-      const x1 = xAtBeat(cumBeats + step.durationBeats);
+    steps.forEach((step, idx) => {
+      const start = cumBeats;
       cumBeats += step.durationBeats;
-      this.drawStepHeader(ctx, step, x0, headerH, step.beatInBar === glowBeat);
-      this.drawStepBlock(ctx, step, idx, x0, x1, blockTop, blockH, now);
+      this.drawStepHeader(ctx, step, xAtBeat(start), headerH, step.beatInBar === glowBeat);
+      if (step.isTargetActive) {
+        flushRest(start);
+        const end = Math.min(totalBeats, start + Math.max(step.lengthBeats, step.durationBeats));
+        coveredUntil = end;
+        this.drawStepBlock(ctx, pb, idx, xAtBeat(start), xAtBeat(end), blockTop, blockH, now);
+      } else if (start >= coveredUntil - 1e-9 && restStart === null) {
+        restStart = start;
+      }
     });
+    flushRest(totalBeats);
 
     if (current) {
       this.drawPhaseOverlay(ctx, current.bar, width, height, xAtBeat, totalBeats, current.progress);
@@ -236,9 +285,54 @@ export class TimelineLane {
     ctx.fillText(step.shortStepLabel, x0 + 6, headerH / 2 + 2);
   }
 
+  /** Beats of the previous phrase bar's last note that ring on into bar `pb`. */
+  private carriedHoldBeats(pb: number): number {
+    const prev = this.phrase[(pb - 1 + this.phrase.length) % this.phrase.length] ?? [];
+    const total = prev.reduce((acc, s) => acc + s.durationBeats, 0);
+    let start = 0;
+    let carry = 0;
+    for (const s of prev) {
+      if (s.isTargetActive) {
+        carry = Math.max(0, start + s.lengthBeats - total);
+      }
+      start += s.durationBeats;
+    }
+    return carry;
+  }
+
+  private drawRest(
+    ctx: CanvasRenderingContext2D,
+    x0: number,
+    x1: number,
+    top: number,
+    height: number,
+  ): void {
+    const inset = 3;
+    const bw = Math.max(4, x1 - x0 - inset * 2);
+    ctx.setLineDash([4, 4]);
+    ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+    ctx.lineWidth = 1;
+    roundRectPath(ctx, x0 + inset + 0.5, top + 0.5, bw - 1, height - 1, 8);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  private drawHoldContinuation(
+    ctx: CanvasRenderingContext2D,
+    x0: number,
+    x1: number,
+    top: number,
+    height: number,
+  ): void {
+    const inset = 3;
+    roundRectPath(ctx, x0 + inset, top, Math.max(4, x1 - x0 - inset * 2), height, 8);
+    ctx.fillStyle = withAlpha(PALETTE.amber, 0.06);
+    ctx.fill();
+  }
+
   private drawStepBlock(
     ctx: CanvasRenderingContext2D,
-    step: PatternStepDescriptor,
+    pb: number,
     idx: number,
     x0: number,
     x1: number,
@@ -250,17 +344,7 @@ export class TimelineLane {
     const bx = x0 + inset;
     const bw = Math.max(4, x1 - x0 - inset * 2);
 
-    if (!step.isTargetActive) {
-      ctx.setLineDash([4, 4]);
-      ctx.strokeStyle = 'rgba(255,255,255,0.12)';
-      ctx.lineWidth = 1;
-      roundRectPath(ctx, bx + 0.5, top + 0.5, bw - 1, height - 1, 8);
-      ctx.stroke();
-      ctx.setLineDash([]);
-      return;
-    }
-
-    const hit = this.lastHits[idx] ?? null;
+    const hit = this.lastHits[pb]?.[idx] ?? null;
     const timing = hit ? this.classify(hit) : null;
     // While playing, a hit older than about one bar means this note was missed since: dim it.
     const barMs = this.currentBarDurationMs();
@@ -279,14 +363,15 @@ export class TimelineLane {
     ctx.fillStyle = fill;
     ctx.fill();
 
-    const flash = this.flashes.get(idx);
+    const flashKey = `${pb}:${idx}`;
+    const flash = this.flashes.get(flashKey);
     if (flash) {
       const t = (nowMs - flash.startMs) / FLASH_DURATION_MS;
       if (t < 1) {
         ctx.fillStyle = withAlpha(flash.color, 0.45 * (1 - t));
         ctx.fill();
       } else {
-        this.flashes.delete(idx);
+        this.flashes.delete(flashKey);
       }
     }
 
@@ -308,7 +393,7 @@ export class TimelineLane {
       ctx.fillText('FOCUS', bx + bw / 2, top + 8);
     }
 
-    const label = this.noteLabels[idx] ?? '';
+    const label = this.phraseLabels[pb]?.[idx] ?? '';
     const cx = bx + bw / 2;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';

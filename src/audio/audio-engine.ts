@@ -28,6 +28,7 @@ import {
   type TargetNoteEvent,
 } from '../groove/timeline';
 import { LOOPBACK_PING_SPACING_SEC } from '../dsp/loopback';
+import type { Rhythm } from '../groove/rhythm';
 import { type ClockSample, driftContributionMs, MIN_DRIFT_SAMPLES } from './clock-drift';
 import captureWorkletUrl from './capture.worklet.ts?worker&url';
 import { StudioDrumSynth } from './drum-synth';
@@ -184,6 +185,8 @@ export class AudioEngine {
   private bpm = 90;
   private subdivision: Subdivision = 1;
   private groovePattern: GroovePatternId = 'uniform';
+  /** Overrides `groovePattern` when set (drills, generated rhythms). */
+  private customRhythm: Rhythm | null = null;
   private soundMode: SoundEngineMode = 'click';
   private bassGuideMode: BassGuideMode = 'off';
   private clickPlacement: ClickPlacementMode = 'all';
@@ -260,8 +263,18 @@ export class AudioEngine {
    * Returns the effective subdivision density for the currently selected groove pattern.
    */
   public getEffectiveSubdivision(): Subdivision {
-    const steps = resolvePatternBarSteps(this.groovePattern, this.subdivision);
+    const steps = this.resolveBarSteps(0);
     return steps[0]?.subdivision ?? this.subdivision;
+  }
+
+  /** Steps of bar `barNumber` of the active groove (multi-bar phrases cycle). */
+  private resolveBarSteps(barNumber: number): readonly PatternStepDescriptor[] {
+    return resolvePatternBarSteps(
+      this.groovePattern,
+      this.subdivision,
+      barNumber,
+      this.customRhythm,
+    );
   }
 
   /**
@@ -287,6 +300,7 @@ export class AudioEngine {
     bpm?: number;
     subdivision?: Subdivision;
     groovePattern?: GroovePatternId;
+    customRhythm?: Rhythm | null;
     soundMode?: SoundEngineMode;
     bassGuideMode?: BassGuideMode;
     clickPlacement?: ClickPlacementMode;
@@ -310,6 +324,10 @@ export class AudioEngine {
     }
     if (config.groovePattern !== undefined) {
       this.groovePattern = config.groovePattern;
+      this.currentStepInBar = 0;
+    }
+    if (config.customRhythm !== undefined) {
+      this.customRhythm = config.customRhythm;
       this.currentStepInBar = 0;
     }
     if (config.soundMode !== undefined) {
@@ -880,10 +898,7 @@ export class AudioEngine {
         continue;
       }
 
-      const barSteps = resolvePatternBarSteps(
-        this.groovePattern,
-        this.subdivision,
-      );
+      let barSteps = this.resolveBarSteps(this.currentBarNumber);
       if (this.currentStepInBar >= barSteps.length) {
         this.currentStepInBar = 0;
       }
@@ -894,6 +909,7 @@ export class AudioEngine {
           return;
         }
         this.currentBarNumber++;
+        barSteps = this.resolveBarSteps(this.currentBarNumber);
         this.activeBarTargetNote = computeBarTarget(
           this.drillMode,
           this.currentBarNumber,

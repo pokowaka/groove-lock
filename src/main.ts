@@ -32,10 +32,11 @@ import {
   isBassGuideActiveForBar,
   type PatternStepDescriptor,
   type PocketFeelOffsetMs,
-  resolvePatternBarSteps,
+  rhythmForPattern,
   type SoundEngineMode,
   type SpeedTrainerStep,
 } from './groove/patterns';
+import { type Rhythm, resolveRhythmBarSteps } from './groove/rhythm';
 import {
   advanceStaircase,
   buildDrillPlan,
@@ -319,6 +320,9 @@ function bootstrapGrooveLock(): void {
   const streak = new StreakTracker();
   const drawers = new DrawerController(dom.drawerScrim);
 
+  /** Steps of each bar of the active phrase, as shown in the lane. */
+  let lanePhrase: readonly (readonly PatternStepDescriptor[])[] = [[]];
+  /** Steps of one bar; every bar of a phrase shares the same step grid. */
   let laneSteps: readonly PatternStepDescriptor[] = [];
   let currentBarExpectedNote: TargetNoteEvent['expectedNote'] =
     computeBarTarget(profile.drillMode, 0).targetNote;
@@ -643,16 +647,27 @@ function bootstrapGrooveLock(): void {
     });
   }
 
+  /** The rhythm being practiced: a drill's custom rhythm, else the selected pattern. */
+  function activeRhythm(): Rhythm {
+    return profile.customRhythm ?? rhythmForPattern(profile.groovePattern, profile.subdivision);
+  }
+
+  function phraseNoteLabels(): string[][] {
+    return lanePhrase.map((steps) => noteLabelsFor(steps, currentBarExpectedNote));
+  }
+
   function rebuildLane(): void {
-    laneSteps = resolvePatternBarSteps(profile.groovePattern, profile.subdivision);
-    lane.setSteps(laneSteps, noteLabelsFor(laneSteps, currentBarExpectedNote));
-    const disabled = profile.groovePattern !== 'uniform';
+    const rhythm = activeRhythm();
+    lanePhrase = rhythm.bars.map((_, i) => resolveRhythmBarSteps(rhythm, i));
+    laneSteps = lanePhrase[0] ?? [];
+    lane.setSteps(lanePhrase, phraseNoteLabels());
+    const disabled = profile.groovePattern !== 'uniform' || profile.customRhythm !== null;
     segmented.get('subdivision')?.setDisabled(disabled);
     dom.subdivisionHelp.hidden = !disabled;
   }
 
   function refreshNoteLabels(): void {
-    lane.setNoteLabels(noteLabelsFor(laneSteps, currentBarExpectedNote));
+    lane.setNoteLabels(phraseNoteLabels());
   }
 
   function updateTargetDisplay(barNumber: number, overrideNote?: TargetNoteEvent['expectedNote']): void {
@@ -1097,6 +1112,7 @@ function bootstrapGrooveLock(): void {
     return {
       bpm: profile.bpm,
       groovePattern: profile.groovePattern,
+      customRhythm: profile.customRhythm,
       subdivision: profile.subdivision,
       clickPlacement: profile.clickPlacement,
       gapBars: profile.gapBars,
@@ -1121,6 +1137,7 @@ function bootstrapGrooveLock(): void {
       bpm: profile.bpm,
       subdivision: profile.subdivision,
       groovePattern: profile.groovePattern,
+      customRhythm: profile.customRhythm,
       soundMode: profile.soundMode,
       bassGuideMode: profile.bassGuideMode,
       clickPlacement: profile.clickPlacement,
@@ -1294,6 +1311,7 @@ function bootstrapGrooveLock(): void {
   ): { hits: RoundHit[]; expected: number; rounds: number } {
     const key = [
       profile.groovePattern,
+      JSON.stringify(profile.customRhythm),
       profile.subdivision,
       profile.pocketCenterMs,
       profile.pocketWindowMs,
@@ -1742,7 +1760,7 @@ function bootstrapGrooveLock(): void {
       (s) => s.beatInBar === t.beatInBar && s.subIndex === t.subIndex,
     );
     if (stepIndex >= 0) {
-      lane.recordHit(stepIndex, entry.feelDeltaMs, judgment);
+      lane.recordHit(t.barNumber, stepIndex, entry.feelDeltaMs, judgment);
     }
     pocketMeter.addHit({ offsetMs: entry.offsetMs, judgment });
 
@@ -2251,6 +2269,7 @@ function bootstrapGrooveLock(): void {
     bpm: profile.bpm,
     subdivision: profile.subdivision,
     groovePattern: profile.groovePattern,
+    customRhythm: profile.customRhythm,
     soundMode: profile.soundMode,
     bassGuideMode: profile.bassGuideMode,
     clickPlacement: profile.clickPlacement,
