@@ -302,6 +302,9 @@ Free practice (today's mode) stays available. The Coach is a guide, not a gate.
 
 ### 7.7 Build order (proposed)
 
+> The curriculum that links these drills into one route, and extends them to odd meters, styles
+> and note length, is in [TIME_PATH.md](./TIME_PATH.md).
+
 | Step | What | Why first |
 |---|---|---|
 | **C1 "Fix it"** | Results-card tip becomes actionable: **[Fix it]** launches the matching drill at an achievable level, staircased; then "Back to your groove" | Smallest change that closes the loop, using today's settings |
@@ -445,6 +448,7 @@ Free practice (today's mode) stays available. The Coach is a guide, not a gate.
 
 ### Known gaps / next up
 
+- **The Time Path** ([TIME_PATH.md](./TIME_PATH.md)) is the plan for what comes next. It's a curriculum of stages from Pulse up to shifting odd meters, with an Off the Grid stage, style boss levels, and note-length (release) grading. Its build order supersedes the "next up" items below.
 - Step 1 polish after real-instrument testing: tune judgment thresholds, star rules, tip wording.
 - Missed notes don't break the streak yet (needs "target passed without hit" detection).
 - The pluck log table was removed from the Play view; it returns on the Review screen (step 3).
