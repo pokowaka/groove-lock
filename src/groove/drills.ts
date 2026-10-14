@@ -220,7 +220,8 @@ export function recommendDrill(
 // ---------------------------------------------------------------------------
 
 const CLICK_LABELS: Readonly<Record<ClickPlacementMode, string>> = {
-  all: 'click every beat',
+  all: 'click every step',
+  beats: 'click on the beats',
   'backbeat-2-4': 'click on 2 & 4',
   'one-drop-1': 'click on 1',
   'offbeat-and': 'click on the &s',

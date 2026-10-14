@@ -25,13 +25,15 @@ export type BassGuideMode =
 
 /**
  * Controls which beats of a 4/4 bar emit an audible click or drum transient:
- * - `'all'`: All 4 beats (and subdivisions when applicable)
+ * - `'all'`: Every step of the grid (all 4 beats and their subdivisions)
+ * - `'beats'`: The 4 beats only (subdivisions silent)
  * - `'backbeat-2-4'`: Beats 2 & 4 only (classic Carol Kaye / Victor Wooten backbeat lock drill)
  * - `'one-drop-1'`: Beat 1 of each bar only ("One-Drop" internal clock drill)
  * - `'offbeat-and'`: Eighth-note off-beats (`&`) only
  */
 export type ClickPlacementMode =
   | 'all'
+  | 'beats'
   | 'backbeat-2-4'
   | 'one-drop-1'
   | 'offbeat-and';
@@ -181,6 +183,8 @@ export function isStepAudible(
   switch (placementMode) {
     case 'all':
       return true;
+    case 'beats':
+      return step.subIndex === 0;
     case 'backbeat-2-4':
       return (
         step.subIndex === 0 && (step.beatInBar === 1 || step.beatInBar === 3)

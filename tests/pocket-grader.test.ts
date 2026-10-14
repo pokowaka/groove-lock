@@ -149,6 +149,13 @@ describe('v0.3 Groove Patterns, Reference Bass Guide & Click Placement Modes', (
       .filter((s) => isStepAudible(s, 'offbeat-and', false))
       .map((s) => s.stepInBar);
     expect(offbeatAudible).toEqual([1, 3, 5, 7]);
+
+    // Beats only: the subdivisions stay silent, so a 16th rhythm is felt against plain quarters.
+    const sixteenths = resolvePatternBarSteps('uniform', 4);
+    const beatsAudible = sixteenths
+      .filter((s) => isStepAudible(s, 'beats', false))
+      .map((s) => s.stepInBar);
+    expect(beatsAudible).toEqual([0, 4, 8, 12]);
   });
 });
 

@@ -167,6 +167,7 @@ function formatExerciseSummary(p: GrooveLockProfile): string {
   if (p.soundMode === 'drums') parts.push('Drums');
   const clicks: Record<ClickPlacementMode, string | null> = {
     all: null,
+    beats: 'Click on beats',
     'backbeat-2-4': 'Click on 2 & 4',
     'one-drop-1': 'Click on 1',
     'offbeat-and': 'Click on &s',

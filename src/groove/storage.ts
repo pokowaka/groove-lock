@@ -37,7 +37,7 @@ export interface GrooveLockProfile {
   soundMode: SoundEngineMode;
   /** Reference bass playback mode (`'off'`, `'call-response-1-1'`, `'call-response-1-3'`, `'demo-first'`, `'always'`). */
   bassGuideMode: BassGuideMode;
-  /** Beat placement mode for clicks/drums (`'all'`, `'backbeat-2-4'`, `'one-drop-1'`, `'offbeat-and'`). */
+  /** Beat placement mode for clicks/drums (`'all'`, `'beats'`, `'backbeat-2-4'`, `'one-drop-1'`, `'offbeat-and'`). */
   clickPlacement: ClickPlacementMode;
   /** In-the-pocket tolerance half-window in milliseconds (`10`, `16`, or `25`). */
   pocketWindowMs: number;
@@ -175,6 +175,7 @@ export function loadProfile(): GrooveLockProfile {
           : DEFAULT_PROFILE.bassGuideMode,
       clickPlacement:
         parsed.clickPlacement === 'all' ||
+        parsed.clickPlacement === 'beats' ||
         parsed.clickPlacement === 'backbeat-2-4' ||
         parsed.clickPlacement === 'one-drop-1' ||
         parsed.clickPlacement === 'offbeat-and'
