@@ -566,6 +566,8 @@ function bootstrapGrooveLock(): void {
         hardwareLatencyMs: Number(new URLSearchParams(window.location.search).get('demoLatency') ?? 18),
         readRange: () => profile.instrumentRange,
         deliverRelease: (release) => handleReleaseEvent(release),
+        // At a Groove Road fork the simulated player picks a road at random.
+        readNote: () => (roadRun?.section.kind === 'fork' ? (Math.random() < 0.5 ? 'E' : 'A') : null),
         readLengthSec: (target) => {
           if (!activeRhythm().gradeLengths) return null;
           const bar = lanePhrase[phraseIndexOf(target)];
@@ -1448,11 +1450,14 @@ function bootstrapGrooveLock(): void {
       run.toast = `Welcome to ${regionById(after.region).name}! New camp unlocked.`;
     } else {
       const changes: string[] = [];
-      if (after.atFork) changes.push('a fork ahead');
+      const fork = after.atFork ? currentSection(after).fork : undefined;
+      if (fork) changes.push('a fork ahead');
       else if (after.deckIndex !== before.deckIndex) changes.push('new rhythm');
       else if (after.bpm !== before.bpm) changes.push(`faster: ${after.bpm} BPM`);
       if (after.band > before.band) changes.push(`+ ${BAND_LEVEL_NAMES[after.band].toLowerCase()}`);
-      run.toast = `Nailed it! ${changes.join(' · ')}`;
+      run.toast = fork
+        ? `Fork ahead! E on the 1 → ${fork.left.name} · A on the 1 → ${fork.right.name}`
+        : `Nailed it! ${changes.join(' · ')}`;
     }
     queueNextSection();
   }
@@ -1498,6 +1503,7 @@ function bootstrapGrooveLock(): void {
       if (roadRun !== run) return;
       run.toast = null;
       dom.bpmValue.textContent = String(profile.bpm);
+      syncBassLineButton();
       rebuildLane();
       if (run.section.kind === 'fork') {
         lane.setNoteLabels(lanePhrase.map((steps) => steps.map((st) => (st.isTargetActive ? 'E | A' : ''))));
@@ -1670,7 +1676,7 @@ function bootstrapGrooveLock(): void {
     if (!run) return;
     const s = run.state;
     const sec = run.section;
-    const choosing = sec.kind === 'fork' && run.forkChoice === undefined && run.sectionStartBar !== null;
+    const choosing = sec.kind === 'fork' && run.forkChoice === undefined;
     dom.roadStrip.classList.toggle('is-fork', choosing);
     dom.roadRegion.textContent = regionById(s.region).name;
     // A tiny map: one mark per rhythm of the region, ● passed, ◆ here, · ahead, then the next region.
@@ -2652,7 +2658,7 @@ function bootstrapGrooveLock(): void {
     }
     const n = target.barNumber + 1;
     dom.barCounter.textContent =
-      !lockIn && effectiveRoundBars() > 0 ? `Bar ${n} / ${effectiveRoundBars()}` : `Bar ${n}`;
+      !lockIn && !roadRun && effectiveRoundBars() > 0 ? `Bar ${n} / ${effectiveRoundBars()}` : `Bar ${n}`;
     setPhaseTag(
       isListenBar(target.phraseBar ?? target.barNumber) ? 'listen' : target.isSilentGapBar ? 'silent' : 'play',
     );

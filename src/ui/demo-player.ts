@@ -18,6 +18,7 @@ export class DemoPlayer {
   private readonly readRange: () => InstrumentRange;
   private readonly deliverRelease: ((release: ReleaseEvent) => void) | null;
   private readonly readLengthSec: ((target: TargetNoteEvent) => number | null) | null;
+  private readonly readNote: ((target: TargetNoteEvent) => TargetNoteEvent['expectedNote'] | null) | null;
 
   constructor(opts: {
     deliver: (pluck: DetectedPluckEvent) => void;
@@ -27,6 +28,8 @@ export class DemoPlayer {
     deliverRelease?: (release: ReleaseEvent) => void;
     /** Written length of the target's note in seconds, or `null` when lengths are not graded. */
     readLengthSec?: (target: TargetNoteEvent) => number | null;
+    /** Overrides the note to play (e.g. a Groove Road fork choice), or `null` for the target's. */
+    readNote?: (target: TargetNoteEvent) => TargetNoteEvent['expectedNote'] | null;
   }) {
     this.deliver = opts.deliver;
     this.readClock = opts.readClock;
@@ -34,6 +37,7 @@ export class DemoPlayer {
     this.readRange = opts.readRange;
     this.deliverRelease = opts.deliverRelease ?? null;
     this.readLengthSec = opts.readLengthSec ?? null;
+    this.readNote = opts.readNote ?? null;
   }
 
   /** Schedules a synthetic pluck for a target that the grader will evaluate. */
@@ -47,7 +51,7 @@ export class DemoPlayer {
       target.timeSec + offsetMs / 1000 + this.hardwareLatencyMs / 1000;
     const now = this.readClock() ?? 0;
     const delayMs = Math.max(0, (rawOnsetTimeSec - now) * 1000 + 40);
-    const voice = describeBassVoiceNote(target.expectedNote, this.readRange());
+    const voice = describeBassVoiceNote(this.readNote?.(target) ?? target.expectedNote, this.readRange());
     const pitch = frequencyToPitchEstimate(voice.freqHz * (1 + gaussian() * 0.002), 0.95);
     window.setTimeout(() => {
       this.deliver({ rawOnsetTimeSec, pitch, peakRms: 0.08 });
