@@ -109,7 +109,25 @@ At full band you're playing a song. Losing the hook when you slip is a strong pu
 | Map strip UI and highlight reel | new |
 | Meter engine (7/8 etc.) for the Odd road | planned in TIME_PATH §4 |
 
-## 8. First slice (prove it's fun)
+## 8. First slice (prove it's fun): ✅ built 2026-10-14
+
+**Status:** playable at **Road (G)**. Verified end-to-end in demo mode; not yet played with a real bass.
+
+| Piece | Where |
+|---|---|
+| Run logic (regions, decks, adapting, hearts, forks, camps) | `src/groove/road.ts` (tested) |
+| Band arrangement (click → drums → hi-hats → percussion → keys → hook, fills, crash) | `src/audio/band.ts` (tested), voices in `drum-synth.ts` |
+| Section handover at a bar line, with a fill, without stopping | `AudioEngine.queueSection()`, `onSectionStart`, `phraseBar` |
+| Strict judging per section | the lock-in machinery (`lock-in.ts`) |
+| Road strip (region, mini map, hearts, band, distance), drawer with camps and best run | `main.ts`, `index.html` |
+| Highlight reel of nailed sections; recording kept to the last 90 s | `concatTakes`, `peekSoundLog` |
+
+**Decisions made while building:**
+- **No speed-ups or rhythm changes on the Ghost road.** It is about keeping time with less help.
+- **Fork options are announced as soon as the fork is earned**, so you can plan E or A for the 1.
+- **A new rhythm is always heard first** (one listen bar), including after a broken section.
+
+**Original plan:**
 
 1. **Run engine:** pure run state (segments, hearts, adapt, decks) and queued bar-line handover in the engine.
 2. **Pulse Plains → Syncopation City**, endless and adaptive, with a drum fill on every change.

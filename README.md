@@ -27,8 +27,9 @@ GrooveLock tries to combine the two:
 - **Honest measurement:** sample-accurate note detection plus latency calibration, so the numbers
   reflect what you actually played. Detector accuracy is checked against real recordings in the
   test suite.
-- **A loop that makes you want to keep going:** short rounds, an instant verdict, stars, streaks, a
-  coach and visible progress.
+- **A loop that makes you want to keep going:** play until you nail it, hear the difference between
+  your first try and the take that nailed it, a coach, a curriculum, and a roguelite run where the
+  band joins you as you lock in.
 - **Ears first:** nothing moves on screen that you could time against unless you ask for it. The
   goal is an internal pulse, not good reactions.
 
@@ -36,12 +37,15 @@ GrooveLock tries to combine the two:
 
 | | |
 |---|---|
-| **Play rounds, hands-free** | Press Space: one bar of count-in, then an 8-bar round. The results card plays your take back, and the next round starts on its own. You never have to put the bass down. |
+| **Play until you nail it** | Press Space: one bar of count-in, then keep playing until you've played N strict clean bars in a row (every note in the pocket, nothing extra). Then you hear the bars that nailed it, and can compare them with your first try. Hands-free: you never have to put the bass down. |
+| **Groove Road** | Press **G** for a roguelite run: one continuous performance. Nail a stretch and you speed up, the rhythm changes, and the band joins (drums, hi-hats, percussion, keys on your root, a hook). Slip and you lose a heart. At a fork, play **E** or **A** on the 1 to choose the Fast lane or the Ghost road. Camps let you start where it gets hard; the run ends with a highlight reel. |
+| **Follow the Time Path** | A curriculum from a steady pulse to odd meters (P). Includes *Off the Grid* (notes in odd places: the a of 2, displaced grooves, 3s across the bar line, strange rhythms) and *Note Length* (ending notes on time). |
 | **See every note** | Each note block in the lane shows how your last hit landed (`−12 EARLY`, `+3 ON TIME`, `+15 LATE`) in green, orange or blue. A pocket meter, consistency meter (σ) and streaks track the session. |
 | **Hear yourself** | Every round is recorded and played back on the results card: your bass and the groove, aligned exactly as they were graded. Switch between Mix / Bass / Drums, replay, or download a WAV. |
-| **Get coached** | The Coach looks at your last few rounds, picks the one thing to fix ("you rush the 4-& by 13 ms"), and offers a drill: Spot Fix, Lay It Back, On Top, Steady Quarters or Ghost Drummer. Drills level up 2-up / 2-down, start one level below your best, and count as mastered once you beat them on two different days. |
+| **Get coached** | The Coach looks at your last few rounds, picks the one thing to fix ("you rush the 4-& by 13 ms", "you cut notes short by 30 ms"), and offers a drill. Drills level up each time you nail the goal (2, then 4, then 8 clean bars), start one level below your best, and count as mastered once you beat them on two different days. |
 | **Practice real grooves** | Straight grids, Motown, funk 16ths, shuffle and 8th-note octaves, with a synthesized drum kit and reference bass. Options: click on every beat, 2 & 4, 1 only or the &s; silent bars; laid-back or pushed feel targets; echo/demo modes; note drills (cycle of 4ths, random notes). |
-| **Track progress** | Round history and drill levels are saved in your browser. The Progress drawer shows the last 7 days and every drill's level. |
+| **Note lengths** | The detector also finds where each note ends (when you mute it). Grooves with written lengths show a held-length bar under each note, and the results say if you cut notes short or let them ring. |
+| **Track progress** | Round history, drill levels, camps and best runs are saved in your browser. The Path drawer shows the last 7 days and every drill's level. |
 
 ![The results card: playback with note markers, stats, and the Coach's suggestion](docs/images/results-card.png)
 
@@ -63,11 +67,11 @@ You need **Chrome**, a bass (or guitar), and an audio interface. GrooveLock was 
 |---|---|---|---|
 | `Space` | Play / stop (or next round) | `E` | Exercise settings |
 | `Enter` | Next round now | `S` | Setup (audio, calibration, diagnostics) |
-| `Esc` | Stay on the results / close drawer | `P` | Progress |
+| `Esc` | Stay on the results / close drawer | `P` | Time Path (`N` next up) |
 | `↑` `↓` | Tempo ±1 (`Shift` ±5) | `F` | Start the Coach's drill |
-| `T` | Tap tempo | `X` | Exit the drill |
+| `T` | Tap tempo | `X` | Exit the drill / end the run |
 | `L` | Replay the take | `C` | Calibrate (when the Coach suggests it) |
-| `R` | Reset session stats | | |
+| `R` | Reset session stats | `G` | Groove Road |
 
 Tip: enable **Direct Monitor** on the interface so you hear your bass with zero latency.
 
@@ -78,8 +82,11 @@ Tip: enable **Direct Monitor** on the interface so you hear your bass with zero 
   on every 128-sample block. Re-plucks on a ringing string must show a real rise in energy, which
   keeps clipped or ringing low notes from being counted twice.
 - **Latency you can trust.** A loopback "sonar" ping measures the round trip (up to 400 ms), and
-  tap calibration is the fallback. The input context runs on the interface's own clock, so the
-  delay can't creep up during a session. Setup shows the clock source and any drift.
+  tap calibration is the fallback. The input context runs on the interface's own clock, and the
+  audio graph is rebuilt before a round once it is 10 minutes old, so the delay can't creep up while
+  the page stays open. Setup shows the clock source and any drift.
+- **Note ends, too.** A release tracker finds where each note is muted (a fast fall that stays
+  down), checked against real recordings to within 15 ms.
 - **One timeline.** Generated grooves produce `TargetNoteEvent`s that the grader matches plucks
   against (each beat is graded once). The same model is meant to drive songs and a scrolling note
   highway later.
@@ -96,10 +103,11 @@ More detail: [`src/DESIGN.md`](./src/DESIGN.md) (audio and DSP architecture),
 
 ## Where it's heading
 
-Next up, roughly in order: a **daily 2-minute Time Check** benchmark with a progress chart; a
-**responsive band** that adds layers when you're locked in and strips back when you drift; sharper
-drills (subdivision click, isolating a single rhythm); then note length and dynamics, a fretboard
-view, and a scrolling highway with songs. See [`UX_VISION.md`](./UX_VISION.md) for the full plan.
+Next up: more of the **Groove Road** (bosses in each region's style, more forks, modifiers), the
+**style kit** (Reggae, Chic, Funk, Neo-soul grooves with their own pocket) and the **odd-meter
+engine** (5/8, 7/8, 9/8 as chains of 2s and 3s), leading to math-rock in shifting meters. See
+[`TIME_PATH.md`](./TIME_PATH.md), [`GROOVE_ROAD.md`](./GROOVE_ROAD.md) and
+[`UX_VISION.md`](./UX_VISION.md).
 
 ---
 

@@ -462,6 +462,14 @@ Free practice (today's mode) stays available. The Coach is a guide, not a gate.
 
 - **2026-10-14: Latency creeps when the page stays open for hours.** The loopback round trip grew from 16 to 62 ms over a few hours (about 4 ppm), and a page reload brought it back to 16 ms. So audio buffers up inside the long-lived audio graph. Fix: before a round, the graph is rebuilt if it is more than 10 minutes old (both contexts and the input stream). "Reconnect audio" does the same on demand. Still to confirm with a ping after a long idle period.
 
+- **2026-10-14: Groove Road, first slice** ([GROOVE_ROAD.md](./GROOVE_ROAD.md)).
+  - **Road (G)** starts a roguelite run: one continuous performance through Pulse Plains and Syncopation City.
+  - **Nailing a section** (lock-in goal) brings, after a drum fill, a faster tempo or a new rhythm (heard first), plus one more band layer. The layers are click, drums, hi-hats, percussion, keys on your root, then a hook.
+  - **Slipping** costs one of 3 hearts and slows the tempo down.
+  - **Forks** let you pick the Fast lane (E on the 1) or the Ghost road (A on the 1).
+  - **Highlight reel and camps.** The run ends with a highlight reel of the nailed sections. Camps and best runs persist.
+  - Verified in demo mode only.
+
 ### Known gaps / next up
 
 - **The Time Path** ([TIME_PATH.md](./TIME_PATH.md)) is the plan for what comes next. It's a curriculum of stages from Pulse up to shifting odd meters, with an Off the Grid stage, style boss levels, and note-length (release) grading. Its build order supersedes the "next up" items below.
