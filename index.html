@@ -37,6 +37,11 @@
         <span class="chip-edit" aria-hidden="true">✎</span>
       </button>
 
+      <button type="button" class="status-chip road-chip" id="road-chip" aria-keyshortcuts="G" aria-controls="road-drawer" title="Groove Road: practice as a run (G)">
+        <span aria-hidden="true">🛣️</span>
+        <span>Road</span>
+      </button>
+
       <button type="button" class="status-chip" id="progress-chip" aria-keyshortcuts="P" aria-controls="progress-drawer" title="Time Path and progress (P)">
         <span aria-hidden="true">🧭</span>
         <span>Path</span>
@@ -51,6 +56,16 @@
 
     <!-- Timeline lane -->
     <section class="lane-panel" aria-label="Timeline">
+      <div class="road-strip" id="road-strip" hidden>
+        <span class="road-badge">Road</span>
+        <span class="road-region" id="road-region"></span>
+        <span class="road-section" id="road-section"></span>
+        <span class="lane-spacer"></span>
+        <span class="road-hearts" id="road-hearts" aria-label="Hearts"></span>
+        <span class="road-band" id="road-band"></span>
+        <span class="road-distance" id="road-distance"></span>
+        <button type="button" class="chip-btn" id="road-exit" aria-keyshortcuts="X">End run <kbd>X</kbd></button>
+      </div>
       <div class="drill-strip" id="drill-strip" hidden>
         <span class="drill-badge">Drill</span>
         <span class="drill-title" id="drill-title"></span>
@@ -147,6 +162,7 @@
       <span><kbd>L</kbd> replay</span>
       <span><kbd>P</kbd> path</span>
       <span><kbd>N</kbd> next up</span>
+      <span><kbd>G</kbd> road</span>
     </footer>
   </div>
 
@@ -374,6 +390,25 @@
             <button type="button" data-value="false">Off</button>
           </div>
         </div>
+      </fieldset>
+    </div>
+  </aside>
+
+  <aside class="drawer" id="road-drawer" aria-label="Groove Road" aria-hidden="true">
+    <div class="drawer-head">
+      <h2>Groove Road</h2>
+      <button type="button" class="icon-btn" data-close-drawer aria-label="Close">✕</button>
+    </div>
+    <div class="drawer-body">
+      <p class="road-intro">One run, no stops. Nail a stretch of road (clean bars in a row) and you speed up, the rhythm changes and the band joins in. Slip and you slow down and lose a heart. Three hearts per run. At a fork, play <strong>E</strong> or <strong>A</strong> on the 1 to choose your road.</p>
+      <fieldset class="group">
+        <legend>Start a run</legend>
+        <div class="road-camps" id="road-camps"></div>
+        <span class="field-help">Reach a region once and you can start future runs there.</span>
+      </fieldset>
+      <fieldset class="group">
+        <legend>Your best</legend>
+        <div class="road-best" id="road-best"></div>
       </fieldset>
     </div>
   </aside>

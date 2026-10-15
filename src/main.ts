@@ -8,6 +8,7 @@ import {
 import { DIAGNOSTICS_MAX_SEC, DiagnosticsRecorder } from './audio/diagnostics';
 import {
   assembleTrack,
+  concatTakes,
   mixTakeToWav,
   normalizePeak,
   type PlaybackMode,
@@ -70,6 +71,23 @@ import {
   updateDrillProgress,
 } from './groove/history';
 import { nextUp, type StageState, stageState, TIME_PATH } from './groove/path';
+import {
+  breakSection,
+  chooseFork,
+  currentSection,
+  loadRoadProgress,
+  MAX_HEARTS,
+  nailSection,
+  recordRun,
+  type RegionId,
+  REGIONS,
+  regionById,
+  type RoadSection,
+  type RunState,
+  saveRoadProgress,
+  startRun,
+} from './groove/road';
+import { BAND_LEVEL_NAMES } from './audio/band';
 import {
   type BarRange,
   goalBarsForLevel,
@@ -280,6 +298,17 @@ function bootstrapGrooveLock(): void {
     resTip: requireEl<HTMLParagraphElement>('res-tip'),
     resLengths: requireEl<HTMLParagraphElement>('res-lengths'),
     lockMeter: requireEl<HTMLSpanElement>('lock-meter'),
+    roadChip: requireEl<HTMLButtonElement>('road-chip'),
+    roadDrawer: requireEl<HTMLElement>('road-drawer'),
+    roadCamps: requireEl<HTMLDivElement>('road-camps'),
+    roadBest: requireEl<HTMLDivElement>('road-best'),
+    roadStrip: requireEl<HTMLDivElement>('road-strip'),
+    roadRegion: requireEl<HTMLSpanElement>('road-region'),
+    roadSection: requireEl<HTMLSpanElement>('road-section'),
+    roadHearts: requireEl<HTMLSpanElement>('road-hearts'),
+    roadBand: requireEl<HTMLSpanElement>('road-band'),
+    roadDistance: requireEl<HTMLSpanElement>('road-distance'),
+    roadExit: requireEl<HTMLButtonElement>('road-exit'),
     takeWhich: requireEl<HTMLDivElement>('take-which'),
     takeWhichSecond: requireEl<HTMLButtonElement>('take-which-second'),
     resTempo: requireEl<HTMLParagraphElement>('res-tempo'),
@@ -412,6 +441,31 @@ function bootstrapGrooveLock(): void {
   }
   /** Before/after takes of the last lock-in attempt. */
   let lockInTakes: { first: TakeView | null; second: TakeView | null } | null = null;
+
+  /** A Groove Road run in progress (see GROOVE_ROAD.md), or `null`. */
+  interface RoadRun {
+    readonly camp: RegionId;
+    state: RunState;
+    section: RoadSection;
+    /** First bar of the current section, or `null` while it waits to take over. */
+    sectionStartBar: number | null;
+    /** Fork result: `undefined` until decided, `null` = straight on. */
+    forkChoice: 'left' | 'right' | null | undefined;
+    forkBarsJudged: number;
+    /** The player's own settings, restored when the run ends. */
+    readonly savedSettings: DrillSettings;
+    /** Takes of nailed sections, for the highlight reel. */
+    highlights: TakeView[];
+    pendingTakes: number;
+    /** A message shown in the road strip until the next section starts. */
+    toast: string | null;
+    endReason: 'hearts' | 'stopped' | null;
+  }
+  let roadRun: RoadRun | null = null;
+  /** The camp of the last finished run, so "New run" can start the same road again. */
+  let lastRoadCamp: RegionId | null = null;
+  let roadProgress = loadRoadProgress(window.localStorage);
+  const MAX_HIGHLIGHTS = 6;
   let lastSummary: RoundSummary | null = null;
   let countdownTimerId: number | null = null;
   let tapTimesMs: number[] = [];
@@ -484,6 +538,7 @@ function bootstrapGrooveLock(): void {
   const engine = new AudioEngine({
     onMeter: handleMeterSnapshot,
     onPluck: handlePluckEvent,
+    onSectionStart: handleSectionStart,
     onRelease: handleReleaseEvent,
     onTargetScheduled: handleTargetScheduled,
     onBeatLamp: () => {},
@@ -528,7 +583,8 @@ function bootstrapGrooveLock(): void {
    * instead of the temporary ones.
    */
   function persist(): void {
-    const own = calibrationSavedSettings ?? activeDrill?.savedSettings ?? null;
+    const own =
+      calibrationSavedSettings ?? activeDrill?.savedSettings ?? roadRun?.savedSettings ?? null;
     saveProfile(own ? { ...profile, ...own } : profile);
   }
 
@@ -678,9 +734,11 @@ function bootstrapGrooveLock(): void {
   }
 
   function updateExerciseSummary(): void {
-    const summary = activeDrill
-      ? `Drill · ${activeDrill.plan.title} · Level ${activeDrill.staircase.level + 1}/${activeDrill.plan.levels.length}`
-      : formatExerciseSummary(profile);
+    const summary = roadRun
+      ? `Groove Road · ${regionById(roadRun.state.region).name}`
+      : activeDrill
+        ? `Drill · ${activeDrill.plan.title} · Level ${activeDrill.staircase.level + 1}/${activeDrill.plan.levels.length}`
+        : formatExerciseSummary(profile);
     dom.exerciseSummary.textContent = summary;
     dom.exerciseChip.title = summary;
   }
@@ -1024,16 +1082,22 @@ function bootstrapGrooveLock(): void {
     roundReleases = [];
     roundExpectedTargets = 0;
     const goal = lockInGoalNow();
-    lockIn = goal > 0 ? new LockInTracker(goal, maxBarsForGoal(goal)) : null;
+    lockIn =
+      goal > 0
+        ? new LockInTracker(goal, roadRun ? roadRun.section.maxBars : maxBarsForGoal(goal))
+        : null;
     lockInKey = exerciseKey();
     barLedgers = [];
     gradedNotes = [];
     earlyReleases = [];
-    isRoundActive = lockIn !== null || effectiveRoundBars() > 0;
+    isRoundActive = lockIn !== null || roadRun !== null || effectiveRoundBars() > 0;
     grader.clearTimeline();
     lane.clearBars();
     beginRoundRecording();
-    engine.setTransportConfig({ roundBars: lockIn ? 0 : effectiveRoundBars(), countInBars: 1 });
+    engine.setTransportConfig({
+      roundBars: lockIn || roadRun ? 0 : effectiveRoundBars(),
+      countInBars: 1,
+    });
     engine.startMetronome();
     startLockInJudging();
     renderLockMeter(null);
@@ -1065,6 +1129,10 @@ function bootstrapGrooveLock(): void {
   }
 
   function togglePlay(): void {
+    if (roadRun && engine.isMetronomeRunning()) {
+      endRoadRunEarly();
+      return;
+    }
     if (engine.isMetronomeRunning()) {
       stopPlaying();
     } else {
@@ -1083,6 +1151,10 @@ function bootstrapGrooveLock(): void {
       expectedTargetCount: roundExpectedTargets,
     });
     lastSummary = summary;
+    if (roadRun) {
+      finishRoadRun(summary);
+      return;
+    }
     recordRoundHistory(summary);
     const token = ++resultsToken;
     const attempt = lockIn;
@@ -1169,6 +1241,7 @@ function bootstrapGrooveLock(): void {
   /** Clean bars in a row to play until, or `0` for a fixed-length round. */
   function lockInGoalNow(): number {
     if (isCalibrating) return 0;
+    if (roadRun) return roadRun.section.kind === 'groove' ? roadRun.section.goalBars : 0;
     if (activeDrill) {
       return goalBarsForLevel(activeDrill.staircase.level, activeDrill.plan.levels.length);
     }
@@ -1198,7 +1271,7 @@ function bootstrapGrooveLock(): void {
 
   function startLockInJudging(): void {
     stopLockInJudging();
-    if (lockIn) {
+    if (lockIn || roadRun) {
       lockInTimerId = window.setInterval(judgeLockInBars, 50);
     }
   }
@@ -1224,11 +1297,23 @@ function bootstrapGrooveLock(): void {
   function judgeLockInBars(): void {
     const tracker = lockIn;
     const now = engine.getAudioClockSec();
-    if (!tracker || tracker.isFinished || now === null) return;
+    if (now === null) return;
+    const run = roadRun;
+    if (run && run.sectionStartBar === null) return;
+    if (!run && (!tracker || tracker.isFinished)) return;
     for (const bar of barLedgers) {
       if (bar.judged || now < bar.endSec + LOCK_IN_JUDGE_DELAY_SEC) continue;
       bar.judged = true;
+      if (run && bar.barNumber < (run.sectionStartBar ?? 0)) continue;
       if (!bar.graded || bar.expected === 0) continue;
+      if (run && run.section.kind === 'fork') {
+        run.forkBarsJudged++;
+        if (run.forkChoice === undefined && run.forkBarsJudged >= run.section.maxBars) {
+          resolveFork(null);
+        }
+        continue;
+      }
+      if (!tracker || tracker.isFinished) continue;
       // A note still sounding well past its written end was held too long.
       for (const note of bar.openLengths) {
         if (now > lengthDeadlineSec(note) + 0.12) bar.lengths.push('long');
@@ -1238,11 +1323,403 @@ function bootstrapGrooveLock(): void {
       const clean = isCleanBar({ ...bar, lengths: lengthsCount ? bar.lengths : [] });
       const event = tracker.record(bar.barNumber, clean);
       renderLockMeter(event);
+      if (run?.toast && tracker.barsJudged === 1) {
+        // The section's message has been read by now; show what to play instead.
+        run.toast = null;
+        renderRoadStrip();
+      }
       if (event === 'nailed' || event === 'gave-up') {
-        engine.finishAtNextBar();
+        if (run) {
+          endRoadSection(event, tracker);
+        } else {
+          engine.finishAtNextBar();
+        }
         break;
       }
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Groove Road: one run, no stops (see GROOVE_ROAD.md)
+  // ---------------------------------------------------------------------------
+
+  /** Practice settings for a road section, on top of the player's own. */
+  function sectionSettings(sec: RoadSection, base: DrillSettings): DrillSettings {
+    return {
+      ...base,
+      bpm: sec.bpm,
+      customRhythm: sec.rhythm,
+      clickPlacement: sec.clickPlacement,
+      gapBars: sec.gapBars,
+      pocketCenterMs: 0,
+      soundMode: 'drums',
+      bassGuideMode: sec.demoFirst ? 'demo-first' : 'off',
+      drillMode: 'free',
+      speedTrainerStep: 0,
+    };
+  }
+
+  /** Starts a Groove Road run from a camp. */
+  function startRoadRun(camp: RegionId): void {
+    if (roadRun) exitRoadRun();
+    if (engine.isMetronomeRunning()) stopPlaying();
+    if (activeDrill) exitDrill(false);
+    cancelCountdown();
+    stopTakePlayback();
+    dom.results.hidden = true;
+    lastRoadCamp = null;
+    const saved = currentDrillSettings();
+    const state = startRun(camp);
+    const section = currentSection(state);
+    roadRun = {
+      camp,
+      state,
+      section,
+      sectionStartBar: 0,
+      forkChoice: undefined,
+      forkBarsJudged: 0,
+      savedSettings: saved,
+      highlights: [],
+      pendingTakes: 0,
+      toast: `Welcome to ${regionById(camp).name}. Listen first, then lock in.`,
+      endReason: null,
+    };
+    applyPracticeSettings(sectionSettings(section, saved));
+    engine.setTransportConfig({ bandLevel: section.band });
+    drawers.close();
+    renderRoadStrip();
+    updateExerciseSummary();
+    void startPlaying();
+  }
+
+  /** Leaves the road and restores the player's own settings. */
+  function exitRoadRun(): void {
+    const run = roadRun;
+    if (!run) return;
+    roadRun = null;
+    lockIn = null;
+    stopLockInJudging();
+    engine.setTransportConfig({ bandLevel: null });
+    applyPracticeSettings(run.savedSettings);
+    renderRoadStrip();
+    renderLockMeter(null);
+    updateExerciseSummary();
+  }
+
+  /** Space / X during a run: finish at the next bar line and show the run's results. */
+  function endRoadRunEarly(): void {
+    const run = roadRun;
+    if (!run) return;
+    if (!engine.isMetronomeRunning()) {
+      exitRoadRun();
+      return;
+    }
+    run.endReason = 'stopped';
+    run.toast = 'Ending the run…';
+    stopLockInJudging();
+    engine.finishAtNextBar();
+    renderRoadStrip();
+  }
+
+  /** A section was nailed or broken: update the run and queue what comes next. */
+  function endRoadSection(event: 'nailed' | 'gave-up', tracker: LockInTracker): void {
+    const run = roadRun;
+    if (!run) return;
+    const before = run.state;
+    if (event === 'nailed') {
+      if (tracker.nailedBars) scheduleHighlightTake(tracker.nailedBars);
+      run.state = nailSection(before);
+    } else {
+      run.state = breakSection(before);
+    }
+    const after = run.state;
+    if (after.over) {
+      run.endReason = 'hearts';
+      run.toast = 'Out of hearts. Last bars…';
+      lockIn = null;
+      engine.finishAtNextBar();
+      renderRoadStrip();
+      return;
+    }
+    if (event === 'gave-up') {
+      run.toast = `Lost a heart. Slowing down to ${after.bpm} BPM.`;
+    } else if (after.region !== before.region) {
+      run.toast = `Welcome to ${regionById(after.region).name}! New camp unlocked.`;
+    } else {
+      const changes: string[] = [];
+      if (after.atFork) changes.push('a fork ahead');
+      else if (after.deckIndex !== before.deckIndex) changes.push('new rhythm');
+      else if (after.bpm !== before.bpm) changes.push(`faster: ${after.bpm} BPM`);
+      if (after.band > before.band) changes.push(`+ ${BAND_LEVEL_NAMES[after.band].toLowerCase()}`);
+      run.toast = `Nailed it! ${changes.join(' · ')}`;
+    }
+    queueNextSection();
+  }
+
+  /** Queues the run's next section; it takes over after a drum fill. */
+  function queueNextSection(): void {
+    const run = roadRun;
+    if (!run) return;
+    const sec = currentSection(run.state);
+    run.section = sec;
+    run.sectionStartBar = null;
+    run.forkChoice = undefined;
+    run.forkBarsJudged = 0;
+    lockIn = null;
+    renderLockMeter(null);
+    const s = sectionSettings(sec, run.savedSettings);
+    engine.queueSection({
+      bpm: s.bpm,
+      customRhythm: s.customRhythm,
+      clickPlacement: s.clickPlacement,
+      gapBars: s.gapBars,
+      bassGuideMode: s.bassGuideMode,
+      pocketCenterMs: s.pocketCenterMs,
+      drillMode: s.drillMode,
+      bandLevel: sec.band,
+    });
+    renderRoadStrip();
+  }
+
+  /** The engine switched to the queued section (reported ahead of the audio). */
+  function handleSectionStart(info: { readonly barNumber: number; readonly startTimeSec: number }): void {
+    const run = roadRun;
+    if (!run) return;
+    run.sectionStartBar = info.barNumber;
+    Object.assign(profile, sectionSettings(run.section, run.savedSettings));
+    lockIn =
+      run.section.kind === 'groove'
+        ? new LockInTracker(run.section.goalBars, run.section.maxBars)
+        : null;
+    pruneRunRecording(info.startTimeSec - 90);
+    const nowSec = engine.getAudioClockSec() ?? info.startTimeSec;
+    window.setTimeout(() => {
+      if (roadRun !== run) return;
+      run.toast = null;
+      dom.bpmValue.textContent = String(profile.bpm);
+      rebuildLane();
+      if (run.section.kind === 'fork') {
+        lane.setNoteLabels(lanePhrase.map((steps) => steps.map((st) => (st.isTargetActive ? 'E | A' : ''))));
+      }
+      renderLockMeter(null);
+      renderRoadStrip();
+      updateExerciseSummary();
+    }, Math.max(0, (info.startTimeSec - nowSec) * 1000));
+  }
+
+  /** Keeps a long run's recording bounded: forget audio and sounds before `beforeSec`. */
+  function pruneRunRecording(beforeSec: number): void {
+    const rec = recording;
+    if (!rec) return;
+    const keepFrom = rec.chunks.findIndex(
+      (c) => c.inputTimeSec + c.clockOffsetSec + c.samples.length / c.sampleRate >= beforeSec,
+    );
+    if (keepFrom > 0) rec.chunks.splice(0, keepFrom);
+    const tickFrom = rec.ticks.findIndex((t) => t.timeSec >= beforeSec);
+    if (tickFrom > 0) rec.ticks.splice(0, tickFrom);
+    engine.peekSoundLog(Infinity, beforeSec);
+  }
+
+  /** At a fork: E on the 1 (in the pocket) takes the left road, A the right one. */
+  function checkForkChoice(target: TargetNoteEvent, inPocket: boolean, noteClass: string | null): void {
+    const run = roadRun;
+    if (!run || run.section.kind !== 'fork' || run.forkChoice !== undefined) return;
+    if (run.sectionStartBar === null || target.barNumber < run.sectionStartBar || !inPocket) return;
+    if (noteClass === 'E') resolveFork('left');
+    else if (noteClass === 'A') resolveFork('right');
+  }
+
+  function resolveFork(choice: 'left' | 'right' | null): void {
+    const run = roadRun;
+    if (!run || run.forkChoice !== undefined) return;
+    const fork = run.section.fork;
+    run.forkChoice = choice;
+    run.state = chooseFork(run.state, choice);
+    run.toast =
+      choice === 'left'
+        ? `${fork?.left.name ?? 'Fast lane'}! +12 BPM`
+        : choice === 'right'
+          ? `${fork?.right.name ?? 'Ghost road'}: the drummer is leaving…`
+          : 'No choice heard: straight on';
+    queueNextSection();
+  }
+
+  /** Builds the take of a nailed section a moment later (once its audio has arrived). */
+  function scheduleHighlightTake(range: BarRange): void {
+    const rec = recording;
+    const run = roadRun;
+    const ctx = engine.getOutputContext();
+    if (!rec || !run || !ctx) return;
+    run.pendingTakes++;
+    window.setTimeout(() => {
+      const win = barsWindow(rec, range);
+      const done = (): void => {
+        run.pendingTakes--;
+      };
+      if (!win) {
+        done();
+        return;
+      }
+      const sounds = engine.peekSoundLog(win.startSec).filter((s) => s.timeSec < win.endSec);
+      buildTakeView({ ...rec, chunks: [...rec.chunks] }, sounds, win, ctx)
+        .then((view) => {
+          run.highlights.push(view);
+          if (run.highlights.length > MAX_HIGHLIGHTS + 1) run.highlights.splice(1, 1);
+        })
+        .catch(() => undefined)
+        .finally(done);
+    }, (TAKE_TAIL_SEC + 0.6) * 1000);
+  }
+
+  /** The run is over (out of hearts or ended): results, progress and the highlight reel. */
+  function finishRoadRun(summary: RoundSummary): void {
+    const run = roadRun;
+    if (!run) return;
+    stopLockInJudging();
+    lockIn = null;
+    renderLockMeter(null);
+    const before = roadProgress;
+    roadProgress = recordRun(roadProgress, run.state);
+    saveRoadProgress(roadProgress, window.localStorage);
+    const newCamps = roadProgress.camps.filter((c) => !before.camps.includes(c));
+    const newBest = before.runs > 0 && run.state.nailed > before.bestNailed;
+    lastRoadCamp = run.camp;
+    const token = ++resultsToken;
+    countdownAfterPlayback = false;
+    void finishRoadRecording(token, run);
+    exitRoadRun();
+
+    const n = run.state.nailed;
+    dom.resultsTitle.textContent =
+      run.endReason === 'stopped' ? `Run ended · ${n} nailed` : `Out of hearts · ${n} nailed`;
+    const reached = regionById(run.state.region).name;
+    const parts = [
+      `Reached ${reached}`,
+      `top tempo ${run.state.topBpm} BPM`,
+      `band: ${BAND_LEVEL_NAMES[run.state.band]}`,
+    ];
+    const campNote = newCamps.length
+      ? ` New camp unlocked: ${newCamps.map((c) => regionById(c).name).join(', ')}. Start there next time.`
+      : '';
+    showCoachBox(
+      newBest ? 'Groove Road · new best run!' : 'Groove Road',
+      `${parts.join(' · ')}.${campNote}`,
+      `Best run: ${roadProgress.bestNailed} nailed · top ${roadProgress.topBpm} BPM`,
+      null,
+    );
+    dom.resTip.hidden = true;
+    dom.resFix.hidden = true;
+    dom.resNextLabel.textContent = 'New run';
+    showResults(summary, null);
+    cancelCountdown();
+    dom.countdown.hidden = true;
+  }
+
+  /** Stops the run's recording and builds the highlight reel (or the last bars). */
+  async function finishRoadRecording(token: number, run: RoadRun): Promise<void> {
+    const rec = recording;
+    if (!rec) return;
+    recording = null;
+    const sounds = engine.takeSoundLog();
+    await engine.stopRecording();
+    if (pcmSink === rec) pcmSink = null;
+    for (let i = 0; i < 50 && run.pendingTakes > 0; i++) {
+      await new Promise((resolve) => window.setTimeout(resolve, 100));
+    }
+    const ctx = engine.getOutputContext();
+    if (!ctx) {
+      onTakeUnavailable(token, 'Nothing to play back.');
+      return;
+    }
+    try {
+      let second: TakeView;
+      const hasReel = run.highlights.length > 0;
+      if (hasReel) {
+        const reel = run.highlights.slice(-MAX_HIGHLIGHTS).map((v) => v.take);
+        second = { take: concatTakes(reel), barsSec: [] };
+      } else {
+        const bars = rec.barStartsSec.length;
+        const win = bars > 0 ? barsWindow(rec, { from: Math.max(0, bars - 4), to: bars - 1 }) : null;
+        if (!win) {
+          onTakeUnavailable(token, 'Nothing to play back.');
+          return;
+        }
+        second = await buildTakeView(rec, sounds, win, ctx);
+      }
+      const first = run.highlights.length > 1 ? run.highlights[0] : null;
+      lockInTakes = { first, second };
+      takes = [...takes, second.take].slice(-MAX_TAKES);
+      if (token !== resultsToken || dom.results.hidden) return;
+      showTakeChoice(first !== null, hasReel ? 'Highlight reel' : 'Last bars', 'First stretch');
+      selectTake(second);
+      dom.takeStatus.textContent = hasReel
+        ? 'Your highlight reel: the stretches you nailed, back to back. L replays.'
+        : 'Your last bars. Nail a stretch to start a highlight reel. L replays.';
+      segmentedTakeMode.setDisabled(second.take.bass === null);
+      if (profile.playbackAfterRound && hasReel) playCurrentTake();
+    } catch {
+      onTakeUnavailable(token, 'Playback unavailable for this run.');
+    }
+  }
+
+  /** The road strip above the lane: region, what to play, hearts, band and distance. */
+  function renderRoadStrip(): void {
+    const run = roadRun;
+    dom.roadStrip.hidden = run === null;
+    if (!run) return;
+    const s = run.state;
+    const sec = run.section;
+    const choosing = sec.kind === 'fork' && run.forkChoice === undefined && run.sectionStartBar !== null;
+    dom.roadStrip.classList.toggle('is-fork', choosing);
+    dom.roadRegion.textContent = regionById(s.region).name;
+    dom.roadSection.textContent =
+      run.toast ??
+      (choosing && sec.fork
+        ? `FORK! Play E on the 1 → ${sec.fork.left.name} · A on the 1 → ${sec.fork.right.name}`
+        : `${sec.label} · ${sec.bpm} BPM`);
+    dom.roadSection.title = dom.roadSection.textContent;
+    dom.roadHearts.textContent = '♥'.repeat(s.hearts) + '♡'.repeat(Math.max(0, MAX_HEARTS - s.hearts));
+    dom.roadBand.textContent = `Band: ${BAND_LEVEL_NAMES[sec.band]}`;
+    dom.roadDistance.textContent = `${s.nailed} nailed`;
+  }
+
+  /** The Groove Road drawer: camps to start from and the best run so far. */
+  function renderRoadDrawer(): void {
+    dom.roadCamps.replaceChildren(
+      ...REGIONS.map((region) => {
+        const unlocked = roadProgress.camps.includes(region.id);
+        const row = document.createElement('div');
+        row.className = unlocked ? 'road-camp' : 'road-camp is-locked';
+        const name = document.createElement('span');
+        name.textContent = region.name;
+        const sub = document.createElement('small');
+        sub.textContent = unlocked
+          ? `${region.deck[0].label} → ${region.deck[region.deck.length - 1].label} · from ${region.startBpm} BPM`
+          : 'Reach it in a run to camp here';
+        name.appendChild(sub);
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = unlocked ? 'btn btn-primary' : 'btn';
+        btn.textContent = unlocked ? 'Start run' : 'Locked';
+        btn.disabled = !unlocked;
+        btn.addEventListener('click', () => startRoadRun(region.id));
+        row.append(name, btn);
+        return row;
+      }),
+    );
+    const best = [
+      `Best run: ${roadProgress.bestNailed} stretches nailed`,
+      `Top tempo: ${roadProgress.topBpm || '—'} BPM`,
+      `Runs: ${roadProgress.runs}`,
+    ];
+    dom.roadBest.replaceChildren(
+      ...best.map((text) => {
+        const row = document.createElement('div');
+        row.className = 'road-best-row';
+        row.textContent = text;
+        return row;
+      }),
+    );
   }
 
   /** The clean-bars meter in the lane header: one dot per bar of the goal. */
@@ -1350,6 +1827,7 @@ function bootstrapGrooveLock(): void {
   }
 
   function stayAfterRound(): void {
+    lastRoadCamp = null;
     cancelCountdown();
     stopTakePlayback();
     countdownAfterPlayback = false;
@@ -1840,6 +2318,10 @@ function bootstrapGrooveLock(): void {
 
   /** What Enter / Space / the countdown do from the results card. */
   function continueAfterResults(): void {
+    if (lastRoadCamp) {
+      startRoadRun(lastRoadCamp);
+      return;
+    }
     if (activeDrill?.isComplete) {
       exitDrill(true);
     }
@@ -1848,7 +2330,7 @@ function bootstrapGrooveLock(): void {
 
   function handleBarScheduled(info: BarScheduleInfo): void {
     lane.pushBar(info, phaseOf(info));
-    if (lockIn && info.kind === 'play' && !ledgerFor(info.barNumber)) {
+    if ((lockIn || roadRun) && info.kind === 'play' && !ledgerFor(info.barNumber)) {
       barLedgers.push({
         barNumber: info.barNumber,
         startSec: info.startTimeSec,
@@ -1985,7 +2467,7 @@ function bootstrapGrooveLock(): void {
       takes = [...takes, view.take].slice(-MAX_TAKES);
       if (token !== resultsToken || dom.results.hidden) return;
       const nailed = attempt?.outcome === 'nailed';
-      showTakeChoice(attempt !== null && lockInTakes?.first !== null, nailed);
+      showTakeChoice(attempt !== null && lockInTakes?.first !== null, nailed ? 'Nailed it' : 'Last bars');
       selectTake(view);
       dom.takeStatus.textContent = !view.take.bass
         ? 'No instrument recorded (connect audio in Setup). Drums only.'
@@ -2006,9 +2488,11 @@ function bootstrapGrooveLock(): void {
   }
 
   /** Shows the First try / Nailed it switch for lock-in results. */
-  function showTakeChoice(show: boolean, nailed: boolean): void {
+  function showTakeChoice(show: boolean, secondLabel: string, firstLabel = 'First try'): void {
     dom.takeWhich.hidden = !show;
-    dom.takeWhichSecond.textContent = nailed ? 'Nailed it' : 'Last bars';
+    dom.takeWhichSecond.textContent = secondLabel;
+    const firstBtn = dom.takeWhich.querySelector<HTMLButtonElement>('[data-value="first"]');
+    if (firstBtn) firstBtn.textContent = firstLabel;
     segmentedTakeWhich.set('second');
   }
 
@@ -2183,11 +2667,17 @@ function bootstrapGrooveLock(): void {
       pocketWindowMs: profile.pocketWindowMs,
       pocketCenterMs: profile.pocketCenterMs,
     });
-    if (!graded && lockIn) {
+    if (!graded && (lockIn || roadRun)) {
       // Strict: a pluck that matches no target (wrong place, or a second hit) spoils its bar.
       const heardSec = pluck.rawOnsetTimeSec - profile.latencyCompensationMs / 1000;
       const bar = barLedgers.find((b) => b.graded && heardSec >= b.startSec && heardSec < b.endSec);
       if (bar) bar.strays++;
+    }
+    if (pluck.pitch) {
+      engine.setBandRoot(pluck.pitch.freqHz);
+    }
+    if (graded && roadRun) {
+      checkForkChoice(graded.targetEvent, graded.inPocket, pluck.pitch?.noteClass ?? null);
     }
     if (graded) {
       handleGradedHit(graded);
@@ -2623,6 +3113,11 @@ function bootstrapGrooveLock(): void {
   });
   dom.progressReset.addEventListener('click', resetProgress);
   dom.pathNextStart.addEventListener('click', startNextUp);
+  dom.roadChip.addEventListener('click', () => {
+    renderRoadDrawer();
+    drawers.toggle(dom.roadDrawer, dom.roadChip);
+  });
+  dom.roadExit.addEventListener('click', endRoadRunEarly);
   dom.diagToggle.addEventListener('click', () => {
     void (diagnostics ? stopDiagnostics() : startDiagnostics());
   });
@@ -2778,10 +3273,18 @@ function bootstrapGrooveLock(): void {
         }
         break;
       case 'KeyX':
-        if (activeDrill) {
+        if (roadRun) {
+          e.preventDefault();
+          endRoadRunEarly();
+        } else if (activeDrill) {
           e.preventDefault();
           exitDrill(false);
         }
+        break;
+      case 'KeyG':
+        e.preventDefault();
+        renderRoadDrawer();
+        drawers.open(dom.roadDrawer, dom.roadChip);
         break;
       case 'ArrowUp':
         e.preventDefault();
