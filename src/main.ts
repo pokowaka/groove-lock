@@ -1808,6 +1808,8 @@ function bootstrapGrooveLock(): void {
     dom.resTempo.hidden = tempoMessage === null;
     dom.resTempo.textContent = tempoMessage ?? '';
     dom.results.hidden = false;
+    // Take focus off whatever header button had it, so keys act on the results card.
+    dom.resNext.focus({ preventScroll: true });
 
     dom.countdown.hidden = !profile.autoContinue;
     if (profile.autoContinue) {
@@ -3270,7 +3272,13 @@ function bootstrapGrooveLock(): void {
         break;
       case 'Enter':
       case 'NumpadEnter':
-        if (!onButton && !dom.results.hidden) {
+        // On the results card, Enter always continues, unless a results button has focus (then
+        // that button acts). Without this, Enter "clicked" whatever header button kept focus, e.g.
+        // the Setup chip after closing the Setup drawer.
+        if (
+          !dom.results.hidden &&
+          !(onButton && target && target !== dom.resNext && dom.results.contains(target))
+        ) {
           e.preventDefault();
           continueAfterResults();
         }
