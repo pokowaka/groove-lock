@@ -29,6 +29,7 @@ import {
 } from '../groove/timeline';
 import { LOOPBACK_PING_SPACING_SEC } from '../dsp/loopback';
 import type { ReleaseEvent } from '../dsp/release';
+import { bandBeatEvents } from './band';
 import type { Rhythm } from '../groove/rhythm';
 import { type ClockSample, driftContributionMs, MIN_DRIFT_SAMPLES } from './clock-drift';
 import captureWorkletUrl from './capture.worklet.ts?worker&url';
@@ -148,6 +149,11 @@ export interface AudioEngineCallbacks {
    * so real-time views can position a playhead against `getAudioClockSec()`.
    */
   readonly onBarScheduled?: (info: BarScheduleInfo) => void;
+  /**
+   * Called (at schedule time, ahead of the audio) when a section queued with `queueSection()`
+   * takes over at a bar line.
+   */
+  readonly onSectionStart?: (info: { readonly barNumber: number; readonly startTimeSec: number }) => void;
   /** Called on each audible count-in beat (`0..3`), roughly when it is heard. */
   readonly onCountInBeat?: (beatInBar: number) => void;
   /** Called after the final graded bar of a round, its landing hit and a short grace period. */
@@ -180,6 +186,28 @@ export interface BarScheduleInfo {
   readonly isGuideBar: boolean;
   /** Target pitch class for this bar. */
   readonly expectedNote: TargetNoteEvent['expectedNote'];
+  /** Bar index within the current section (see `TargetNoteEvent.phraseBar`). */
+  readonly phraseBar: number;
+  /** `true` if this bar ends with a drum fill because a new section starts after it. */
+  readonly isFillBar: boolean;
+}
+
+/** Settings that can change between sections of a running Groove Road run. */
+export interface TransportConfig {
+  bpm?: number;
+  subdivision?: Subdivision;
+  groovePattern?: GroovePatternId;
+  customRhythm?: Rhythm | null;
+  soundMode?: SoundEngineMode;
+  bassGuideMode?: BassGuideMode;
+  clickPlacement?: ClickPlacementMode;
+  pocketCenterMs?: PocketFeelOffsetMs;
+  gapBars?: GapClickMode;
+  drillMode?: DrillMode;
+  countInBars?: number;
+  roundBars?: number;
+  /** Groove Road band layer (`0..MAX_BAND_LEVEL`), or `null` for the normal click / drums. */
+  bandLevel?: number | null;
 }
 
 /**
@@ -223,6 +251,22 @@ export class AudioEngine {
   private countInBeatsRemaining = 0;
   /** Set by `finishAtNextBar()`: end the round at the next bar line. */
   private finishRequested = false;
+
+  /** First bar of the current section; phrases, gap modes and guide bars count from here. */
+  private sectionStartBar = 0;
+  /** A section waiting to take over, and the bar that plays its fill (`null` = not chosen yet). */
+  private pendingSection: { config: TransportConfig; fillBar: number | null } | null = null;
+  /** Groove Road band layer, or `null` for the normal click / drums. */
+  private bandLevel: number | null = null;
+  /** Root of the keys and hook, in Hz (follows the notes you play). */
+  private bandRootHz = 164.81;
+  /** The next downbeat starts a section: crash. */
+  private crashNextDownbeat = false;
+  /** Highest beat of the current bar already scheduled (`-1` before its first step). */
+  private scheduledBeatInBar = -1;
+  /** Per-bar state used while scheduling its steps. */
+  private currentPhraseBar = 0;
+  private currentIsFillBar = false;
   private roundFinishTimerId: number | null = null;
 
   /** Scheduled sounds since `beginSoundLog()`, or `null` when not logging. */
@@ -319,20 +363,10 @@ export class AudioEngine {
    * click placement, pocket feel center, gap-click mode, note exercise mode, count-in or round length.
    * Count-in and round length take effect on the next `startMetronome()`.
    */
-  public setTransportConfig(config: {
-    bpm?: number;
-    subdivision?: Subdivision;
-    groovePattern?: GroovePatternId;
-    customRhythm?: Rhythm | null;
-    soundMode?: SoundEngineMode;
-    bassGuideMode?: BassGuideMode;
-    clickPlacement?: ClickPlacementMode;
-    pocketCenterMs?: PocketFeelOffsetMs;
-    gapBars?: GapClickMode;
-    drillMode?: DrillMode;
-    countInBars?: number;
-    roundBars?: number;
-  }): void {
+  public setTransportConfig(config: TransportConfig): void {
+    if (config.bandLevel !== undefined) {
+      this.bandLevel = config.bandLevel;
+    }
     if (config.countInBars !== undefined) {
       this.countInBars = Math.max(0, Math.floor(config.countInBars));
     }
@@ -819,6 +853,10 @@ export class AudioEngine {
     this.currentBarNumber = 0;
     this.hasStartedFirstStep = false;
     this.finishRequested = false;
+    this.sectionStartBar = 0;
+    this.pendingSection = null;
+    this.crashNextDownbeat = false;
+    this.scheduledBeatInBar = -1;
     this.nextNoteTimeSec = this.outputCtx.currentTime + 0.06;
     this.activeBarTargetNote = computeBarTarget(this.drillMode, 0).targetNote;
     this.countInBeatsRemaining = this.countInBars * 4;
@@ -826,6 +864,50 @@ export class AudioEngine {
     this.schedulerTimerId = window.setInterval(() => {
       this.runMetronomeScheduler();
     }, 25);
+  }
+
+  /**
+   * Queues a new section (tempo, rhythm, click, band…) without stopping: the current bar (or the
+   * next one, if its last beat is already scheduled) ends with a drum fill, and the new section
+   * takes over at the following bar line. `onSectionStart` reports when. Applies at once when
+   * stopped.
+   */
+  public queueSection(config: TransportConfig): void {
+    if (!this.isRunning || !this.hasStartedFirstStep) {
+      this.setTransportConfig(config);
+      return;
+    }
+    const lastBeatScheduled = this.scheduledBeatInBar >= 3;
+    this.pendingSection = { config, fillBar: lastBeatScheduled ? null : this.currentBarNumber };
+  }
+
+  /** Sets the root of the band's keys and hook from a played note (any octave). */
+  public setBandRoot(freqHz: number): void {
+    if (!(freqHz > 0)) return;
+    let f = freqHz;
+    while (f < 130) f *= 2;
+    while (f >= 260) f /= 2;
+    this.bandRootHz = f;
+  }
+
+  /** Applies a queued section at a bar start, or picks this bar for its fill. */
+  private advancePendingSectionAtBarStart(): void {
+    const pending = this.pendingSection;
+    if (!pending) return;
+    if (pending.fillBar === null) {
+      pending.fillBar = this.currentBarNumber;
+      return;
+    }
+    if (this.currentBarNumber > pending.fillBar) {
+      this.pendingSection = null;
+      this.setTransportConfig(pending.config);
+      this.sectionStartBar = this.currentBarNumber;
+      this.crashNextDownbeat = true;
+      this.callbacks.onSectionStart?.({
+        barNumber: this.currentBarNumber,
+        startTimeSec: this.nextNoteTimeSec,
+      });
+    }
   }
 
   /**
@@ -950,11 +1032,19 @@ export class AudioEngine {
     this.callbacks.onSoundScheduled?.({ kind: 'click', timeSec, variant });
   }
 
-  private playDrum(kind: 'kick' | 'snare' | 'hihat', timeSec: number, level: number): void {
+  private playDrum(
+    kind: 'kick' | 'snare' | 'hihat' | 'crash' | 'shaker' | 'tambourine',
+    timeSec: number,
+    level: number,
+  ): void {
     if (!this.outputCtx) return;
-    if (kind === 'kick') this.drumSynth.scheduleKick(this.outputCtx, timeSec, level);
-    else if (kind === 'snare') this.drumSynth.scheduleSnare(this.outputCtx, timeSec, level);
-    else this.drumSynth.scheduleHiHat(this.outputCtx, timeSec, level);
+    const ctx = this.outputCtx;
+    if (kind === 'kick') this.drumSynth.scheduleKick(ctx, timeSec, level);
+    else if (kind === 'snare') this.drumSynth.scheduleSnare(ctx, timeSec, level);
+    else if (kind === 'hihat') this.drumSynth.scheduleHiHat(ctx, timeSec, level);
+    else if (kind === 'crash') this.drumSynth.scheduleCrash(ctx, timeSec, level);
+    else if (kind === 'shaker') this.drumSynth.scheduleShaker(ctx, timeSec, level);
+    else this.drumSynth.scheduleTambourine(ctx, timeSec, level);
     this.soundLog?.push({ kind, timeSec, level });
     this.callbacks.onSoundScheduled?.({ kind, timeSec, level });
   }
@@ -974,7 +1064,7 @@ export class AudioEngine {
         continue;
       }
 
-      let barSteps = this.resolveBarSteps(this.currentBarNumber);
+      let barSteps = this.resolveBarSteps(this.currentBarNumber - this.sectionStartBar);
       if (this.currentStepInBar >= barSteps.length) {
         this.currentStepInBar = 0;
       }
@@ -988,7 +1078,8 @@ export class AudioEngine {
           return;
         }
         this.currentBarNumber++;
-        barSteps = this.resolveBarSteps(this.currentBarNumber);
+        this.advancePendingSectionAtBarStart();
+        barSteps = this.resolveBarSteps(this.currentBarNumber - this.sectionStartBar);
         this.activeBarTargetNote = computeBarTarget(
           this.drillMode,
           this.currentBarNumber,
@@ -997,14 +1088,14 @@ export class AudioEngine {
       this.hasStartedFirstStep = true;
 
       const step = barSteps[this.currentStepInBar];
-      const isSilentGapBar = isBarSilentInGapMode(
-        this.currentBarNumber,
-        this.gapBars,
-      );
-      const guideBassPlayingThisBar = isBassGuideActiveForBar(
-        this.currentBarNumber,
-        this.bassGuideMode,
-      );
+      const phraseBar = this.currentBarNumber - this.sectionStartBar;
+      if (this.currentStepInBar === 0) {
+        this.scheduledBeatInBar = -1;
+      }
+      this.currentPhraseBar = phraseBar;
+      this.currentIsFillBar = this.pendingSection?.fillBar === this.currentBarNumber;
+      const isSilentGapBar = isBarSilentInGapMode(phraseBar, this.gapBars);
+      const guideBassPlayingThisBar = isBassGuideActiveForBar(phraseBar, this.bassGuideMode);
       const secondsPerBeat = 60.0 / this.bpm;
 
       if (this.currentStepInBar === 0) {
@@ -1018,6 +1109,8 @@ export class AudioEngine {
           isSilentGapBar,
           isGuideBar: guideBassPlayingThisBar,
           expectedNote: this.activeBarTargetNote,
+          phraseBar,
+          isFillBar: this.currentIsFillBar,
         });
       }
 
@@ -1030,6 +1123,7 @@ export class AudioEngine {
         beatLabel: step.beatLabel,
         expectedNote: this.activeBarTargetNote,
         isSilentGapBar,
+        phraseBar,
       };
 
       this.scheduleStepAudioAndLamps(
@@ -1047,6 +1141,9 @@ export class AudioEngine {
         this.callbacks.onTargetScheduled(targetEvent);
       }
 
+      if (step.subIndex === 0) {
+        this.scheduledBeatInBar = step.beatInBar;
+      }
       this.nextNoteTimeSec += secondsPerBeat * step.durationBeats;
       this.currentStepInBar = (this.currentStepInBar + 1) % barSteps.length;
     }
@@ -1076,6 +1173,8 @@ export class AudioEngine {
         isSilentGapBar: false,
         isGuideBar: false,
         expectedNote: this.activeBarTargetNote,
+        phraseBar: -1,
+        isFillBar: false,
       });
     }
 
@@ -1102,7 +1201,10 @@ export class AudioEngine {
       this.schedulerTimerId = null;
     }
 
-    if (this.soundMode === 'drums') {
+    if (this.bandLevel !== null && this.bandLevel > 0) {
+      this.playDrum('kick', landingTimeSec, 0.62);
+      this.playDrum('crash', landingTimeSec, 0.22);
+    } else if (this.soundMode === 'drums') {
       this.playDrum('kick', landingTimeSec, 0.62);
       this.playDrum('hihat', landingTimeSec, 0.2);
     } else {
@@ -1139,6 +1241,12 @@ export class AudioEngine {
     isSilentGapBar: boolean,
   ): void {
     if (!this.outputCtx) {
+      return;
+    }
+    if (this.bandLevel !== null) {
+      if (step.subIndex === 0) {
+        this.scheduleBandBeat(step.beatInBar, timeSec, isSilentGapBar);
+      }
       return;
     }
     const audible = isStepAudible(
@@ -1192,6 +1300,68 @@ export class AudioEngine {
       this.playDrum('hihat', timeSec, 0.12);
     } else {
       this.playClick(timeSec, 'subdivision');
+    }
+  }
+
+  /** Schedules everything the Groove Road band plays on one beat. */
+  private scheduleBandBeat(beatInBar: number, beatTimeSec: number, isSilentGapBar: boolean): void {
+    if (!this.outputCtx || this.bandLevel === null) return;
+    const crash = this.crashNextDownbeat && beatInBar === 0;
+    if (beatInBar === 0) this.crashNextDownbeat = false;
+    const secondsPerBeat = 60.0 / this.bpm;
+    const events = bandBeatEvents({
+      level: this.bandLevel,
+      beatInBar,
+      beatsPerBar: 4,
+      phraseBar: this.currentPhraseBar,
+      placement: this.clickPlacement,
+      silent: isSilentGapBar,
+      fill: this.currentIsFillBar,
+      crash,
+    });
+    for (const e of events) {
+      const t = beatTimeSec + e.offsetBeats * secondsPerBeat;
+      switch (e.voice) {
+        case 'click':
+          this.playClick(t, e.click ?? 'quarter');
+          break;
+        case 'kick':
+          this.playDrum('kick', t, 0.58 * e.level);
+          break;
+        case 'snare':
+          this.playDrum('snare', t, 0.42 * e.level);
+          break;
+        case 'hihat':
+          this.playDrum('hihat', t, 0.16 * e.level);
+          break;
+        case 'crash':
+          this.playDrum('crash', t, 0.22 * e.level);
+          break;
+        case 'shaker':
+          this.playDrum('shaker', t, 0.07 * e.level);
+          break;
+        case 'tambourine':
+          this.playDrum('tambourine', t, 0.12 * e.level);
+          break;
+        case 'keys': {
+          const freqsHz = (e.semitones ?? [0]).map((s) => this.bandRootHz * 2 ** (s / 12));
+          const durationSec = (e.durationBeats ?? 0.3) * secondsPerBeat;
+          const level = 0.09 * e.level;
+          this.drumSynth.scheduleKeys(this.outputCtx, t, freqsHz, durationSec, level);
+          this.soundLog?.push({ kind: 'keys', timeSec: t, freqsHz, durationSec, level });
+          this.callbacks.onSoundScheduled?.({ kind: 'keys', timeSec: t, freqsHz, durationSec, level });
+          break;
+        }
+        case 'lead': {
+          const freqHz = this.bandRootHz * 2 ** ((e.semitones?.[0] ?? 12) / 12);
+          const durationSec = (e.durationBeats ?? 0.5) * secondsPerBeat;
+          const level = 0.06 * e.level;
+          this.drumSynth.scheduleLead(this.outputCtx, t, freqHz, durationSec, level);
+          this.soundLog?.push({ kind: 'lead', timeSec: t, freqHz, durationSec, level });
+          this.callbacks.onSoundScheduled?.({ kind: 'lead', timeSec: t, freqHz, durationSec, level });
+          break;
+        }
+      }
     }
   }
 

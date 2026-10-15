@@ -512,7 +512,7 @@ function bootstrapGrooveLock(): void {
         deliverRelease: (release) => handleReleaseEvent(release),
         readLengthSec: (target) => {
           if (!activeRhythm().gradeLengths) return null;
-          const bar = lanePhrase[((target.barNumber % lanePhrase.length) + lanePhrase.length) % lanePhrase.length];
+          const bar = lanePhrase[phraseIndexOf(target)];
           const step = bar?.find((st) => st.beatInBar === target.beatInBar && st.subIndex === target.subIndex);
           return step && step.lengthBeats > 0 ? (step.lengthBeats * 60) / profile.bpm : null;
         },
@@ -566,8 +566,9 @@ function bootstrapGrooveLock(): void {
     dom.bassGuideHelp.textContent = text;
   }
 
-  function isListenBar(barNumber: number): boolean {
-    return isCallResponseMode() && isBassGuideActiveForBar(barNumber, profile.bassGuideMode);
+  /** `true` for a reference-bass demo bar (`phraseBar` = bar within the current section). */
+  function isListenBar(phraseBar: number): boolean {
+    return isCallResponseMode() && isBassGuideActiveForBar(phraseBar, profile.bassGuideMode);
   }
 
   const segmented = new Map<string, SegmentedControl>();
@@ -750,6 +751,13 @@ function bootstrapGrooveLock(): void {
     return profile.customRhythm ?? rhythmForPattern(profile.groovePattern, profile.subdivision);
   }
 
+  /** Index into `lanePhrase` of the bar a target belongs to (its bar within the section). */
+  function phraseIndexOf(target: TargetNoteEvent): number {
+    const n = lanePhrase.length;
+    const bar = target.phraseBar ?? target.barNumber;
+    return ((bar % n) + n) % n;
+  }
+
   function phraseNoteLabels(): string[][] {
     return lanePhrase.map((steps) => noteLabelsFor(steps, currentBarExpectedNote));
   }
@@ -793,7 +801,7 @@ function bootstrapGrooveLock(): void {
 
   function phaseOf(info: BarScheduleInfo): LanePhase {
     if (info.kind === 'count-in') return 'count-in';
-    if (isListenBar(info.barNumber)) return 'listen';
+    if (isListenBar(info.phraseBar)) return 'listen';
     if (info.isSilentGapBar) return 'silent';
     return 'play';
   }
@@ -1845,7 +1853,7 @@ function bootstrapGrooveLock(): void {
         barNumber: info.barNumber,
         startSec: info.startTimeSec,
         endSec: info.startTimeSec + info.durationSec,
-        graded: !isListenBar(info.barNumber),
+        graded: !isListenBar(info.phraseBar),
         expected: 0,
         hits: [],
         strays: 0,
@@ -2121,7 +2129,7 @@ function bootstrapGrooveLock(): void {
 
   function handleTargetScheduled(event: TargetNoteEvent): void {
     diagnostics?.addTarget(event);
-    if (isListenBar(event.barNumber)) {
+    if (isListenBar(event.phraseBar ?? event.barNumber)) {
       return;
     }
     grader.pushTargetEvent(event);
@@ -2149,7 +2157,7 @@ function bootstrapGrooveLock(): void {
     dom.barCounter.textContent =
       !lockIn && effectiveRoundBars() > 0 ? `Bar ${n} / ${effectiveRoundBars()}` : `Bar ${n}`;
     setPhaseTag(
-      isListenBar(target.barNumber) ? 'listen' : target.isSilentGapBar ? 'silent' : 'play',
+      isListenBar(target.phraseBar ?? target.barNumber) ? 'listen' : target.isSilentGapBar ? 'silent' : 'play',
     );
     updateTargetDisplay(target.barNumber, target.expectedNote);
   }
@@ -2203,7 +2211,7 @@ function bootstrapGrooveLock(): void {
   /** Remembers a graded note so its release can be graded against its written length. */
   function trackNoteForRelease(onsetSec: number, target: TargetNoteEvent): void {
     if (!activeRhythm().gradeLengths) return;
-    const bar = lanePhrase[((target.barNumber % lanePhrase.length) + lanePhrase.length) % lanePhrase.length];
+    const bar = lanePhrase[phraseIndexOf(target)];
     const stepIndex = bar?.findIndex((s) => s.beatInBar === target.beatInBar && s.subIndex === target.subIndex) ?? -1;
     const step = bar?.[stepIndex];
     if (!step || step.lengthBeats <= 0) return;
@@ -2250,7 +2258,7 @@ function bootstrapGrooveLock(): void {
     const secPerBeat = 60 / profile.bpm;
     const heldBeats =
       (event.releaseTimeSec - profile.latencyCompensationMs / 1000 - note.target.timeSec) / secPerBeat;
-    lane.recordRelease(note.target.barNumber, note.stepIndex, heldBeats, result.judgment);
+    lane.recordRelease(note.target.phraseBar ?? note.target.barNumber, note.stepIndex, heldBeats, result.judgment);
     const ledger = ledgerFor(note.target.barNumber);
     if (ledger) {
       ledger.openLengths = ledger.openLengths.filter((n) => n !== note);
@@ -2319,7 +2327,7 @@ function bootstrapGrooveLock(): void {
       (s) => s.beatInBar === t.beatInBar && s.subIndex === t.subIndex,
     );
     if (stepIndex >= 0) {
-      lane.recordHit(t.barNumber, stepIndex, entry.feelDeltaMs, judgment);
+      lane.recordHit(t.phraseBar ?? t.barNumber, stepIndex, entry.feelDeltaMs, judgment);
     }
     pocketMeter.addHit({ offsetMs: entry.offsetMs, judgment });
 

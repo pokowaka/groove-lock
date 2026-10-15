@@ -224,7 +224,7 @@ export class TimelineLane {
     const blockH = Math.max(40, height - 12 - blockTop);
     const current = this.currentBar(this.readClock());
     if (current && current.bar.info.kind === 'play') {
-      this.shownBar = this.phraseBarOf(current.bar.info.barNumber);
+      this.shownBar = this.phraseBarOf(current.bar.info.phraseBar);
     }
     const pb = this.shownBar;
     const steps = this.phrase[pb] ?? [];

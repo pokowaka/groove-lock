@@ -57,6 +57,11 @@ export interface TargetNoteEvent {
   readonly expectedNote: NoteClass | 'ANY';
   /** `true` if the metronome click was intentionally muted by the Gap Click trainer. */
   readonly isSilentGapBar: boolean;
+  /**
+   * Bar index within the current section (multi-bar phrases, gap modes and guide bars count from
+   * here). Equals `barNumber` unless the Groove Road switched sections mid-run.
+   */
+  readonly phraseBar?: number;
   /** Optional string and fret hint for future tablature / play-along chart modes. */
   readonly stringAndFret?: {
     readonly stringNumber: number;
