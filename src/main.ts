@@ -308,6 +308,7 @@ function bootstrapGrooveLock(): void {
     roadHearts: requireEl<HTMLSpanElement>('road-hearts'),
     roadBand: requireEl<HTMLSpanElement>('road-band'),
     roadDistance: requireEl<HTMLSpanElement>('road-distance'),
+    roadMap: requireEl<HTMLSpanElement>('road-map'),
     roadExit: requireEl<HTMLButtonElement>('road-exit'),
     takeWhich: requireEl<HTMLDivElement>('take-which'),
     takeWhichSecond: requireEl<HTMLButtonElement>('take-which-second'),
@@ -1672,6 +1673,18 @@ function bootstrapGrooveLock(): void {
     const choosing = sec.kind === 'fork' && run.forkChoice === undefined && run.sectionStartBar !== null;
     dom.roadStrip.classList.toggle('is-fork', choosing);
     dom.roadRegion.textContent = regionById(s.region).name;
+    // A tiny map: one mark per rhythm of the region, ● passed, ◆ here, · ahead, then the next region.
+    const region = regionById(s.region);
+    const marks = region.deck.map((_, i) => (i < s.deckIndex ? '●' : i === s.deckIndex ? '◆' : '·'));
+    const tail = region.next ? ` ▸ ${regionById(region.next).name}` : ' ▸ ∞';
+    dom.roadMap.replaceChildren();
+    marks.forEach((m) => {
+      const el = document.createElement(m === '◆' ? 'b' : 'span');
+      el.textContent = m;
+      dom.roadMap.appendChild(el);
+    });
+    dom.roadMap.append(tail);
+    dom.roadMap.title = `Rhythm ${s.deckIndex + 1} of ${region.deck.length} in ${region.name}`;
     dom.roadSection.textContent =
       run.toast ??
       (choosing && sec.fork

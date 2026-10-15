@@ -1644,6 +1644,19 @@ input[type='range'] {
   color: var(--accent-amber);
 }
 
+.road-map {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 1px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.road-map b {
+  color: var(--accent-amber);
+  font-weight: 700;
+}
+
 .road-hearts {
   font-size: 18px;
   letter-spacing: 2px;
