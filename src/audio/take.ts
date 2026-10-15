@@ -151,6 +151,54 @@ export function encodeWavChannels(channels: readonly Float32Array[], sampleRate:
   return buffer;
 }
 
+/**
+ * Joins mono sample runs end to end with `gapSamples` of silence between them; `{ silence: n }`
+ * stands for a run of `n` silent samples (a part without audio).
+ */
+export function concatSamples(
+  parts: readonly (Float32Array | { readonly silence: number })[],
+  gapSamples: number,
+): Float32Array<ArrayBuffer> {
+  const lengths = parts.map((p) => (p instanceof Float32Array ? p.length : p.silence));
+  const total = lengths.reduce((a, n) => a + n, 0) + Math.max(0, parts.length - 1) * gapSamples;
+  const out = new Float32Array(total);
+  let offset = 0;
+  parts.forEach((p, i) => {
+    if (p instanceof Float32Array) out.set(p, offset);
+    offset += lengths[i] + gapSamples;
+  });
+  return out;
+}
+
+/**
+ * Plays several takes back to back as one (the Groove Road highlight reel), with a short pause
+ * between them.
+ */
+export function concatTakes(takes: readonly Take[], gapSec = 0.6): Take {
+  const sr = takes[0]?.drums.sampleRate ?? 48000;
+  const gap = Math.round(gapSec * sr);
+  const drums = concatSamples(takes.map((t) => t.drums.getChannelData(0).slice()), gap);
+  const anyBass = takes.some((t) => t.bass);
+  const bass = anyBass
+    ? concatSamples(
+        takes.map((t) => (t.bass ? t.bass.getChannelData(0).slice() : { silence: t.drums.length })),
+        gap,
+      )
+    : null;
+  const ticks: TakeTick[] = [];
+  let offsetSec = 0;
+  for (const t of takes) {
+    for (const tick of t.ticks) ticks.push({ timeSec: tick.timeSec + offsetSec, judgment: tick.judgment });
+    offsetSec += t.drums.length / sr + gapSec;
+  }
+  return {
+    drums: toAudioBuffer(drums, sr),
+    bass: bass ? toAudioBuffer(bass, sr) : null,
+    durationSec: drums.length / sr,
+    ticks,
+  };
+}
+
 /** Wraps mono samples in an `AudioBuffer`. */
 export function toAudioBuffer(data: Float32Array<ArrayBuffer>, sampleRate: number): AudioBuffer {
   const buffer = new AudioBuffer({ length: Math.max(1, data.length), sampleRate, numberOfChannels: 1 });

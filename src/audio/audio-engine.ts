@@ -1018,6 +1018,18 @@ export class AudioEngine {
     this.soundLog = [];
   }
 
+  /**
+   * Sounds logged from `fromSec` on (output clock), without stopping the log; also forgets sounds
+   * before `forgetBeforeSec`, so a long Groove Road run does not grow the log forever.
+   */
+  public peekSoundLog(fromSec: number, forgetBeforeSec = -Infinity): ScheduledSound[] {
+    if (!this.soundLog) return [];
+    if (forgetBeforeSec > -Infinity) {
+      this.soundLog = this.soundLog.filter((s) => s.timeSec >= forgetBeforeSec);
+    }
+    return this.soundLog.filter((s) => s.timeSec >= fromSec);
+  }
+
   /** Returns the sounds logged since `beginSoundLog()` and stops logging. */
   public takeSoundLog(): ScheduledSound[] {
     const log = this.soundLog ?? [];

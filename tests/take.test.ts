@@ -7,6 +7,7 @@ import {
   median,
   mixGains,
   normalizePeak,
+  concatSamples,
 } from '../src/audio/take';
 
 function chunk(
@@ -17,6 +18,18 @@ function chunk(
 ): RecordedPcmChunk {
   return { inputTimeSec, clockOffsetSec, sampleRate, samples: Float32Array.from(samples) };
 }
+
+describe('concatSamples', () => {
+  it('joins parts with silence between them', () => {
+    const out = concatSamples([new Float32Array([1, 2]), new Float32Array([3])], 2);
+    expect(Array.from(out)).toEqual([1, 2, 0, 0, 3]);
+  });
+
+  it('treats a missing part as silence of the given length', () => {
+    const out = concatSamples([new Float32Array([1]), { silence: 2 }], 1);
+    expect(Array.from(out)).toEqual([1, 0, 0, 0]);
+  });
+});
 
 describe('median', () => {
   it('handles odd and even counts', () => {
