@@ -1112,6 +1112,8 @@ function bootstrapGrooveLock(): void {
 
   function stopPlaying(): void {
     engine.stopMetronome();
+    // Anything that stops the transport outright (a drill, calibration…) abandons a road run.
+    if (roadRun) exitRoadRun();
     stopLockInJudging();
     lockIn = null;
     renderLockMeter(null);
