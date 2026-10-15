@@ -40,7 +40,25 @@ import { StudioDrumSynth } from './drum-synth';
  */
 export type ScheduledSound =
   | { readonly kind: 'click'; readonly timeSec: number; readonly variant: 'downbeat' | 'quarter' | 'subdivision' }
-  | { readonly kind: 'kick' | 'snare' | 'hihat'; readonly timeSec: number; readonly level: number }
+  | {
+      readonly kind: 'kick' | 'snare' | 'hihat' | 'crash' | 'shaker' | 'tambourine';
+      readonly timeSec: number;
+      readonly level: number;
+    }
+  | {
+      readonly kind: 'keys';
+      readonly timeSec: number;
+      readonly freqsHz: readonly number[];
+      readonly durationSec: number;
+      readonly level: number;
+    }
+  | {
+      readonly kind: 'lead';
+      readonly timeSec: number;
+      readonly freqHz: number;
+      readonly durationSec: number;
+      readonly level: number;
+    }
   | {
       readonly kind: 'bass';
       readonly timeSec: number;

@@ -161,6 +161,120 @@ export class StudioDrumSynth {
     noiseSrc.stop(timeSec + 0.036);
   }
 
+  /** A noise burst through a filter: the shared core of the cymbal and percussion voices. */
+  private scheduleNoise(
+    ctx: BaseAudioContext,
+    timeSec: number,
+    opts: { type: BiquadFilterType; freq: number; q?: number; level: number; decaySec: number },
+  ): void {
+    const src = ctx.createBufferSource();
+    src.buffer = this.getNoiseBuffer(ctx);
+    const filter = ctx.createBiquadFilter();
+    filter.type = opts.type;
+    filter.frequency.setValueAtTime(opts.freq, timeSec);
+    if (opts.q !== undefined) filter.Q.setValueAtTime(opts.q, timeSec);
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(opts.level, timeSec);
+    gain.gain.exponentialRampToValueAtTime(0.0008, timeSec + opts.decaySec);
+    src.connect(filter);
+    filter.connect(gain);
+    gain.connect(ctx.destination);
+    src.start(timeSec);
+    src.stop(timeSec + Math.min(0.98, opts.decaySec + 0.01));
+  }
+
+  /** A washy crash cymbal (marks the start of a new section). */
+  public scheduleCrash(ctx: BaseAudioContext, timeSec: number, level = 0.22): void {
+    this.scheduleNoise(ctx, timeSec, { type: 'highpass', freq: 4200, level, decaySec: 0.9 });
+    this.scheduleNoise(ctx, timeSec, { type: 'bandpass', freq: 9000, q: 0.7, level: level * 0.6, decaySec: 0.5 });
+  }
+
+  /** A soft shaker grain (16th-note percussion). */
+  public scheduleShaker(ctx: BaseAudioContext, timeSec: number, level = 0.06): void {
+    this.scheduleNoise(ctx, timeSec, { type: 'bandpass', freq: 7500, q: 1.4, level, decaySec: 0.045 });
+  }
+
+  /** A tambourine hit: bright jingles with a short ring. */
+  public scheduleTambourine(ctx: BaseAudioContext, timeSec: number, level = 0.12): void {
+    this.scheduleNoise(ctx, timeSec, { type: 'bandpass', freq: 10500, q: 2.5, level, decaySec: 0.16 });
+    this.scheduleNoise(ctx, timeSec + 0.012, { type: 'bandpass', freq: 8200, q: 3, level: level * 0.6, decaySec: 0.1 });
+  }
+
+  /**
+   * A soft electric-piano style chord stab.
+   *
+   * @param freqsHz One frequency per chord note.
+   */
+  public scheduleKeys(
+    ctx: BaseAudioContext,
+    timeSec: number,
+    freqsHz: readonly number[],
+    durationSec: number,
+    level = 0.08,
+  ): void {
+    const stop = timeSec + durationSec + 0.12;
+    const out = ctx.createGain();
+    out.gain.setValueAtTime(0.0001, timeSec);
+    out.gain.linearRampToValueAtTime(level, timeSec + 0.008);
+    out.gain.exponentialRampToValueAtTime(level * 0.5, timeSec + Math.max(0.03, durationSec * 0.6));
+    out.gain.setValueAtTime(level * 0.5, timeSec + durationSec);
+    out.gain.exponentialRampToValueAtTime(0.0005, stop);
+    const lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.setValueAtTime(2400, timeSec);
+    lp.connect(out);
+    out.connect(ctx.destination);
+    for (const f of freqsHz) {
+      for (const [type, mix, detune] of [['sine', 0.7, 0], ['triangle', 0.35, 4]] as const) {
+        const osc = ctx.createOscillator();
+        const g = ctx.createGain();
+        osc.type = type;
+        osc.frequency.setValueAtTime(f, timeSec);
+        osc.detune.setValueAtTime(detune, timeSec);
+        g.gain.setValueAtTime(mix / freqsHz.length, timeSec);
+        osc.connect(g);
+        g.connect(lp);
+        osc.start(timeSec);
+        osc.stop(stop + 0.01);
+      }
+    }
+  }
+
+  /** A mellow lead note for the hook (square through a low-pass, slight vibrato). */
+  public scheduleLead(
+    ctx: BaseAudioContext,
+    timeSec: number,
+    freqHz: number,
+    durationSec: number,
+    level = 0.06,
+  ): void {
+    const stop = timeSec + durationSec + 0.08;
+    const osc = ctx.createOscillator();
+    osc.type = 'square';
+    osc.frequency.setValueAtTime(freqHz, timeSec);
+    const vib = ctx.createOscillator();
+    const vibGain = ctx.createGain();
+    vib.frequency.setValueAtTime(5.5, timeSec);
+    vibGain.gain.setValueAtTime(freqHz * 0.004, timeSec);
+    vib.connect(vibGain);
+    vibGain.connect(osc.frequency);
+    const lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.setValueAtTime(Math.min(4000, freqHz * 4), timeSec);
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.0001, timeSec);
+    gain.gain.linearRampToValueAtTime(level, timeSec + 0.015);
+    gain.gain.setValueAtTime(level * 0.8, timeSec + durationSec);
+    gain.gain.exponentialRampToValueAtTime(0.0005, stop);
+    osc.connect(lp);
+    lp.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(timeSec);
+    vib.start(timeSec);
+    osc.stop(stop + 0.01);
+    vib.stop(stop + 0.01);
+  }
+
   /**
    * Schedules a warm, articulate fingerstyle Electric Bass (P-Bass / Jazz Bass model) note:
    * - Combines a fundamental `triangle` sub-oscillator with a harmonic `sawtooth` string voice

@@ -185,6 +185,21 @@ export async function renderSoundsOffline(
       case 'hihat':
         synth.scheduleHiHat(ctx, t, s.level);
         break;
+      case 'crash':
+        synth.scheduleCrash(ctx, t, s.level);
+        break;
+      case 'shaker':
+        synth.scheduleShaker(ctx, t, s.level);
+        break;
+      case 'tambourine':
+        synth.scheduleTambourine(ctx, t, s.level);
+        break;
+      case 'keys':
+        synth.scheduleKeys(ctx, t, s.freqsHz, s.durationSec, s.level);
+        break;
+      case 'lead':
+        synth.scheduleLead(ctx, t, s.freqHz, s.durationSec, s.level);
+        break;
       case 'bass':
         synth.scheduleBassNote(ctx, t, s.freqHz, s.gateSec, s.level);
         break;
